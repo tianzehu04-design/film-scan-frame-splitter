@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Film Scan Frame Splitter</title>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2933;
+      --muted: #627080;
+      --line: #d8dee7;
+      --panel: #f7f9fb;
+      --paper: #ffffff;
+      --accent: #c33b32;
+      --accent-strong: #9e2b25;
+      --green: #23765a;
+      --focus: #246bfe;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 18px;
+      overflow-y: auto;
+    }
+
+    main {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-width: 0;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 21px;
+      line-height: 1.2;
+      font-weight: 720;
+    }
+
+    h2 {
+      margin: 22px 0 10px;
+      font-size: 13px;
+      font-weight: 760;
+      text-transform: uppercase;
+      color: #374250;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .control {
+      margin: 12px 0;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      color: #354151;
+      margin-bottom: 6px;
+      font-weight: 650;
+    }
+
+    input[type="file"],
+    input[type="number"],
+    select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      color: var(--ink);
+      padding: 8px 10px;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
+    input:focus,
+    select:focus,
+    button:focus {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    button {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      color: var(--ink);
+      cursor: pointer;
+      font-weight: 680;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover {
+      background: var(--accent-strong);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 470px);
+      min-height: 0;
+    }
+
+    .preview-wrap {
+      position: relative;
+      overflow: auto;
+      background: #e9edf2;
+      min-width: 0;
+      display: grid;
+      place-items: start center;
+      padding: 18px;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(31, 41, 51, 0.14);
+    }
+
+    .empty {
+      width: min(760px, 100%);
+      min-height: 420px;
+      border: 1px dashed #aab4c0;
+      background: #fff;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      text-align: center;
+      padding: 28px;
+    }
+
+    .editor {
+      border-left: 1px solid var(--line);
+      padding: 16px;
+      overflow: auto;
+      background: #fff;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 640px;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 7px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    th {
+      background: var(--panel);
+      color: #344154;
+      font-size: 12px;
+    }
+
+    tr.selected td {
+      background: #fff1ef;
+    }
+
+    td input[type="number"] {
+      width: 78px;
+      min-height: 30px;
+      padding: 4px 6px;
+    }
+
+    td button {
+      min-height: 30px;
+      padding: 2px 8px;
+    }
+
+    .meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 12px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: #fff;
+    }
+
+    .download {
+      display: none;
+      margin-top: 12px;
+      color: var(--green);
+      font-weight: 720;
+      text-decoration: none;
+    }
+
+    .notice {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 1050px) {
+      .app,
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      aside,
+      .editor {
+        border: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      main {
+        display: block;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <h1>Film Scan Frame Splitter</h1>
+
+      <h2>Scan</h2>
+      <div class="control">
+        <label for="fileInput">Image file</label>
+        <input id="fileInput" type="file" accept="image/*">
+      </div>
+
+      <h2>Detection</h2>
+      <div class="control">
+        <label for="aspect">Frame aspect</label>
+        <select id="aspect">
+          <option value="landscape">Landscape 3:2</option>
+          <option value="portrait">Portrait 2:3</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="control">
+          <label for="orientation">Strip direction</label>
+          <select id="orientation">
+            <option value="auto">Auto</option>
+            <option value="horizontal">Horizontal</option>
+            <option value="vertical">Vertical</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="lanes">Parallel lanes</label>
+          <select id="lanes">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="control">
+          <label for="frames">Frames per lane</label>
+          <input id="frames" type="number" min="1" max="80" value="6">
+        </div>
+        <div class="control">
+          <label for="padding">Padding %</label>
+          <input id="padding" type="number" min="-10" max="20" step="0.5" value="0">
+        </div>
+      </div>
+
+      <h2>Export</h2>
+      <div class="control">
+        <label for="format">Format</label>
+        <select id="format">
+          <option value="image/png">PNG</option>
+          <option value="image/jpeg">JPEG</option>
+        </select>
+      </div>
+
+      <div class="actions">
+        <button id="detectBtn" class="primary" disabled>Detect</button>
+        <button id="addBtn" disabled>Add Box</button>
+        <button id="exportBtn" class="primary" disabled>Export ZIP</button>
+        <button id="resetBtn" disabled>Reset</button>
+      </div>
+
+      <a id="downloadLink" class="download" download="film_frames.zip">Download ZIP</a>
+      <p class="notice" id="message">Upload a film scan to begin.</p>
+    </aside>
+
+    <main>
+      <header>
+        <div>
+          <h1>Crop Preview</h1>
+        </div>
+        <div class="status" id="status">No image loaded</div>
+      </header>
+
+      <section class="workspace">
+        <div class="preview-wrap">
+          <div class="empty" id="emptyState">Upload a scan, detect frame boxes, adjust values, then export.</div>
+          <canvas id="previewCanvas" hidden></canvas>
+        </div>
+
+        <div class="editor">
+          <div class="meta">
+            <span class="pill" id="imageMeta">Image: -</span>
+            <span class="pill" id="boxMeta">Frames: 0</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>On</th>
+                  <th>#</th>
+                  <th>X</th>
+                  <th>Y</th>
+                  <th>Width</th>
+                  <th>Height</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="boxTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      image: null,
+      imageName: "",
+      boxes: [],
+      selected: -1,
+      scale: 1,
+      previewMax: 2200
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const previewCanvas = $("previewCanvas");
+    const ctx = previewCanvas.getContext("2d");
+
+    function luminance(r, g, b) {
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function sortedBoxes() {
+      return [...state.boxes].sort((a, b) => a.order - b.order);
+    }
+
+    function setMessage(text) {
+      $("message").textContent = text;
+    }
+
+    function drawPreview() {
+      if (!state.image) return;
+      const img = state.image;
+      state.scale = Math.min(1, state.previewMax / Math.max(img.naturalWidth, img.naturalHeight));
+      previewCanvas.width = Math.max(1, Math.round(img.naturalWidth * state.scale));
+      previewCanvas.height = Math.max(1, Math.round(img.naturalHeight * state.scale));
+      ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+      ctx.drawImage(img, 0, 0, previewCanvas.width, previewCanvas.height);
+
+      sortedBoxes().forEach((box, displayIndex) => {
+        const originalIndex = state.boxes.indexOf(box);
+        const x = box.x * state.scale;
+        const y = box.y * state.scale;
+        const w = box.width * state.scale;
+        const h = box.height * state.scale;
+        ctx.lineWidth = Math.max(2, Math.round(Math.min(previewCanvas.width, previewCanvas.height) / 550));
+        ctx.strokeStyle = box.enabled ? "#c33b32" : "#818b98";
+        ctx.fillStyle = box.enabled ? "#c33b32" : "#818b98";
+        if (originalIndex === state.selected) {
+          ctx.strokeStyle = "#246bfe";
+          ctx.fillStyle = "#246bfe";
+        }
+        ctx.strokeRect(x, y, w, h);
+        const label = String(displayIndex + 1);
+        const labelW = 24 + label.length * 8;
+        const labelH = 22;
+        const labelY = Math.max(0, y - labelH - 2);
+        ctx.fillRect(x, labelY, labelW, labelH);
+        ctx.fillStyle = "#fff";
+        ctx.font = "13px system-ui, sans-serif";
+        ctx.fillText(label, x + 7, labelY + 15);
+      });
+    }
+
+    function updateMeta() {
+      if (state.image) {
+        $("imageMeta").textContent = `Image: ${state.image.naturalWidth} x ${state.image.naturalHeight}`;
+        $("status").textContent = state.imageName;
+      } else {
+        $("imageMeta").textContent = "Image: -";
+        $("status").textContent = "No image loaded";
+      }
+      const enabled = state.boxes.filter((box) => box.enabled).length;
+      $("boxMeta").textContent = `Frames: ${enabled}`;
+      $("exportBtn").disabled = !enabled;
+      $("addBtn").disabled = !state.image;
+      $("detectBtn").disabled = !state.image;
+      $("resetBtn").disabled = !state.image;
+    }
+
+    function renderTable() {
+      const tbody = $("boxTable");
+      tbody.replaceChildren();
+      sortedBoxes().forEach((box) => {
+        const index = state.boxes.indexOf(box);
+        const tr = document.createElement("tr");
+        if (index === state.selected) tr.classList.add("selected");
+        tr.addEventListener("click", () => {
+          state.selected = index;
+          render();
+        });
+
+        const enabled = document.createElement("input");
+        enabled.type = "checkbox";
+        enabled.checked = box.enabled;
+        enabled.addEventListener("change", () => {
+          box.enabled = enabled.checked;
+          render();
+        });
+
+        tr.appendChild(cell(enabled));
+        tr.appendChild(numberCell(box, "order", 1, 999));
+        tr.appendChild(numberCell(box, "x", 0, state.image.naturalWidth - 1));
+        tr.appendChild(numberCell(box, "y", 0, state.image.naturalHeight - 1));
+        tr.appendChild(numberCell(box, "width", 1, state.image.naturalWidth));
+        tr.appendChild(numberCell(box, "height", 1, state.image.naturalHeight));
+
+        const remove = document.createElement("button");
+        remove.textContent = "Delete";
+        remove.addEventListener("click", (event) => {
+          event.stopPropagation();
+          state.boxes.splice(index, 1);
+          state.boxes.forEach((item, order) => item.order = order + 1);
+          state.selected = -1;
+          render();
+        });
+        tr.appendChild(cell(remove));
+        tbody.appendChild(tr);
+      });
+    }
+
+    function cell(child) {
+      const td = document.createElement("td");
+      td.appendChild(child);
+      return td;
+    }
+
+    function numberCell(box, key, min, max) {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = min;
+      input.max = max;
+      input.step = 1;
+      input.value = box[key];
+      input.addEventListener("change", () => {
+        box[key] = Math.round(clamp(Number(input.value) || min, min, max));
+        clampBox(box);
+        render();
+      });
+      return cell(input);
+    }
+
+    function clampBox(box) {
+      const maxW = state.image.naturalWidth;
+      const maxH = state.image.naturalHeight;
+      box.x = Math.round(clamp(box.x, 0, maxW - 1));
+      box.y = Math.round(clamp(box.y, 0, maxH - 1));
+      box.width = Math.round(clamp(box.width, 1, maxW - box.x));
+      box.height = Math.round(clamp(box.height, 1, maxH - box.y));
+    }
+
+    function render() {
+      $("emptyState").hidden = Boolean(state.image);
+      previewCanvas.hidden = !state.image;
+      updateMeta();
+      renderTable();
+      drawPreview();
+    }
+
+    function analyzeBounds() {
+      const img = state.image;
+      const maxSide = 1200;
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const c = canvas.getContext("2d", { willReadFrequently: true });
+      c.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const data = c.getImageData(0, 0, canvas.width, canvas.height).data;
+
+      const border = [];
+      const edge = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) / 35));
+      for (let y = 0; y < canvas.height; y += 2) {
+        for (let x = 0; x < canvas.width; x += 2) {
+          if (x < edge || y < edge || x >= canvas.width - edge || y >= canvas.height - edge) {
+            const i = (y * canvas.width + x) * 4;
+            border.push(luminance(data[i], data[i + 1], data[i + 2]));
+          }
+        }
+      }
+      border.sort((a, b) => a - b);
+      const bg = border[Math.floor(border.length / 2)] || 255;
+      const threshold = 18;
+      let minX = canvas.width;
+      let minY = canvas.height;
+      let maxX = 0;
+      let maxY = 0;
+
+      for (let y = 0; y < canvas.height; y += 2) {
+        for (let x = 0; x < canvas.width; x += 2) {
+          const i = (y * canvas.width + x) * 4;
+          const diff = Math.abs(luminance(data[i], data[i + 1], data[i + 2]) - bg);
+          if (diff > threshold) {
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+        }
+      }
+
+      if (maxX <= minX || maxY <= minY) {
+        return { x: 0, y: 0, width: img.naturalWidth, height: img.naturalHeight };
+      }
+
+      const margin = 0.012 / scale;
+      const x = clamp(Math.round(minX / scale - img.naturalWidth * margin), 0, img.naturalWidth - 1);
+      const y = clamp(Math.round(minY / scale - img.naturalHeight * margin), 0, img.naturalHeight - 1);
+      const right = clamp(Math.round(maxX / scale + img.naturalWidth * margin), x + 1, img.naturalWidth);
+      const bottom = clamp(Math.round(maxY / scale + img.naturalHeight * margin), y + 1, img.naturalHeight);
+      return { x, y, width: right - x, height: bottom - y };
+    }
+
+    function detectBoxes() {
+      const img = state.image;
+      const bounds = analyzeBounds();
+      const orientationSetting = $("orientation").value;
+      const orientation = orientationSetting === "auto"
+        ? (bounds.width >= bounds.height ? "horizontal" : "vertical")
+        : orientationSetting;
+      const lanes = Number($("lanes").value) || 1;
+      const frames = clamp(Number($("frames").value) || 1, 1, 80);
+      const landscape = $("aspect").value === "landscape";
+      const padding = (Number($("padding").value) || 0) / 100;
+      const boxes = [];
+
+      for (let lane = 0; lane < lanes; lane++) {
+        if (orientation === "horizontal") {
+          const laneY = bounds.y + bounds.height * lane / lanes;
+          const laneH = bounds.height / lanes;
+          let cropH = laneH * 0.88;
+          let cropW = landscape ? cropH * 1.5 : cropH / 1.5;
+          if (cropW * frames > bounds.width * 1.05) {
+            cropW = bounds.width / frames * 0.96;
+            cropH = landscape ? cropW / 1.5 : cropW * 1.5;
+          }
+          const gap = frames > 1 ? (bounds.width - cropW * frames) / (frames - 1) : 0;
+          const y = laneY + (laneH - cropH) / 2;
+          for (let frame = 0; frame < frames; frame++) {
+            const x = bounds.x + frame * (cropW + gap);
+            boxes.push(makeBox(x, y, cropW, cropH, boxes.length + 1, padding, img));
+          }
+        } else {
+          const laneX = bounds.x + bounds.width * lane / lanes;
+          const laneW = bounds.width / lanes;
+          let cropW = laneW * 0.88;
+          let cropH = landscape ? cropW / 1.5 : cropW * 1.5;
+          if (cropH * frames > bounds.height * 1.05) {
+            cropH = bounds.height / frames * 0.96;
+            cropW = landscape ? cropH * 1.5 : cropH / 1.5;
+          }
+          const gap = frames > 1 ? (bounds.height - cropH * frames) / (frames - 1) : 0;
+          const x = laneX + (laneW - cropW) / 2;
+          for (let frame = 0; frame < frames; frame++) {
+            const y = bounds.y + frame * (cropH + gap);
+            boxes.push(makeBox(x, y, cropW, cropH, boxes.length + 1, padding, img));
+          }
+        }
+      }
+
+      state.boxes = boxes;
+      state.selected = boxes.length ? 0 : -1;
+      setMessage(`Detected ${boxes.length} crop box${boxes.length === 1 ? "" : "es"}.`);
+      render();
+    }
+
+    function makeBox(x, y, width, height, order, padding, img) {
+      const padX = width * padding;
+      const padY = height * padding;
+      const box = {
+        enabled: true,
+        order,
+        x: Math.round(x - padX),
+        y: Math.round(y - padY),
+        width: Math.round(width + padX * 2),
+        height: Math.round(height + padY * 2)
+      };
+      state.image = img;
+      clampBox(box);
+      return box;
+    }
+
+    async function exportZip() {
+      if (!state.image || !state.boxes.length) return;
+      $("exportBtn").disabled = true;
+      setMessage("Preparing ZIP...");
+      const zip = new JSZip();
+      const fmt = $("format").value;
+      const ext = fmt === "image/jpeg" ? "jpg" : "png";
+      const selected = sortedBoxes().filter((box) => box.enabled);
+
+      for (let i = 0; i < selected.length; i++) {
+        const box = selected[i];
+        const canvas = document.createElement("canvas");
+        canvas.width = box.width;
+        canvas.height = box.height;
+        const c = canvas.getContext("2d");
+        c.drawImage(state.image, box.x, box.y, box.width, box.height, 0, 0, box.width, box.height);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, fmt, 0.98));
+        zip.file(`frame_${String(i + 1).padStart(3, "0")}.${ext}`, blob);
+      }
+
+      const zipBlob = await zip.generateAsync({ type: "blob", compression: "STORE" });
+      const link = $("downloadLink");
+      if (link.href) URL.revokeObjectURL(link.href);
+      link.href = URL.createObjectURL(zipBlob);
+      link.style.display = "inline-block";
+      link.textContent = `Download ZIP (${selected.length} frame${selected.length === 1 ? "" : "s"})`;
+      $("exportBtn").disabled = false;
+      setMessage("ZIP is ready.");
+    }
+
+    $("fileInput").addEventListener("change", (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        if (state.image && state.image.src.startsWith("blob:")) URL.revokeObjectURL(state.image.src);
+        state.image = img;
+        state.imageName = file.name;
+        state.boxes = [];
+        state.selected = -1;
+        $("downloadLink").style.display = "none";
+        setMessage("Image loaded.");
+        render();
+      };
+      img.src = url;
+    });
+
+    $("detectBtn").addEventListener("click", detectBoxes);
+    $("exportBtn").addEventListener("click", exportZip);
+    $("resetBtn").addEventListener("click", () => {
+      state.boxes = [];
+      state.selected = -1;
+      $("downloadLink").style.display = "none";
+      setMessage("Crop boxes cleared.");
+      render();
+    });
+    $("addBtn").addEventListener("click", () => {
+      if (!state.image) return;
+      const landscape = $("aspect").value === "landscape";
+      const width = Math.round(state.image.naturalWidth * 0.35);
+      const height = Math.round(landscape ? width / 1.5 : width * 1.5);
+      const box = {
+        enabled: true,
+        order: state.boxes.length + 1,
+        x: Math.round((state.image.naturalWidth - width) / 2),
+        y: Math.round((state.image.naturalHeight - height) / 2),
+        width,
+        height
+      };
+      clampBox(box);
+      state.boxes.push(box);
+      state.selected = state.boxes.length - 1;
+      render();
+    });
+
+    previewCanvas.addEventListener("click", (event) => {
+      if (!state.image) return;
+      const rect = previewCanvas.getBoundingClientRect();
+      const x = (event.clientX - rect.left) / state.scale;
+      const y = (event.clientY - rect.top) / state.scale;
+      let hit = -1;
+      state.boxes.forEach((box, index) => {
+        if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) {
+          hit = index;
+        }
+      });
+      state.selected = hit;
+      render();
+    });
+
+    window.addEventListener("resize", drawPreview);
+    render();
+  </script>
+</body>
+</html>
