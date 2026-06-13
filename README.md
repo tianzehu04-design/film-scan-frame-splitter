@@ -41,6 +41,22 @@ Then open the local URL Streamlit prints, usually:
 http://localhost:8501
 ```
 
+## Deploy as a Public Web App
+
+This app is ready for Streamlit Community Cloud or another Python app host.
+
+For Streamlit Community Cloud, create a new app from this public GitHub repository:
+
+```text
+Repository: tianzehu04-design/film-scan-frame-splitter
+Branch: main
+Main file path: app.py
+```
+
+No secrets are required. The host should install dependencies from `requirements.txt`.
+
+For very large TIFF scans, local use is still recommended because cloud hosts usually have stricter upload, memory, and runtime limits.
+
 ## Workflow
 
 1. Upload one full-resolution film-strip scan.
