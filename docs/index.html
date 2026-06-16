@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Film Scan Frame Splitter</title>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
   <style>
     :root {
       color-scheme: light;
@@ -303,13 +304,14 @@
       <h2>Scan</h2>
       <div class="control">
         <label for="fileInput">Image file</label>
-        <input id="fileInput" type="file" accept="image/*">
+        <input id="fileInput" type="file" accept="image/*,.tif,.tiff">
       </div>
 
       <h2>Detection</h2>
       <div class="control">
-        <label for="aspect">Frame aspect</label>
+        <label for="aspect">Crop mode</label>
         <select id="aspect">
+          <option value="detected">Detected photo bounds</option>
           <option value="landscape">Landscape 3:2</option>
           <option value="portrait">Portrait 2:3</option>
         </select>
@@ -326,6 +328,7 @@
         <div class="control">
           <label for="lanes">Parallel lanes</label>
           <select id="lanes">
+            <option value="auto">Auto</option>
             <option value="1">1</option>
             <option value="2">2</option>
             <option value="3">3</option>
@@ -336,7 +339,7 @@
       <div class="row">
         <div class="control">
           <label for="frames">Frames per lane</label>
-          <input id="frames" type="number" min="1" max="80" value="6">
+          <input id="frames" type="number" min="0" max="80" value="0">
         </div>
         <div class="control">
           <label for="padding">Padding %</label>
@@ -348,7 +351,7 @@
       <div class="control">
         <label for="format">Format</label>
         <select id="format">
-          <option value="image/png">PNG</option>
+          <option value="image/png">PNG lossless</option>
           <option value="image/jpeg">JPEG</option>
         </select>
       </div>
@@ -426,6 +429,14 @@
       return Math.max(min, Math.min(max, value));
     }
 
+    function imageWidth() {
+      return state.image ? (state.image.naturalWidth || state.image.width) : 0;
+    }
+
+    function imageHeight() {
+      return state.image ? (state.image.naturalHeight || state.image.height) : 0;
+    }
+
     function sortedBoxes() {
       return [...state.boxes].sort((a, b) => a.order - b.order);
     }
@@ -437,9 +448,11 @@
     function drawPreview() {
       if (!state.image) return;
       const img = state.image;
-      state.scale = Math.min(1, state.previewMax / Math.max(img.naturalWidth, img.naturalHeight));
-      previewCanvas.width = Math.max(1, Math.round(img.naturalWidth * state.scale));
-      previewCanvas.height = Math.max(1, Math.round(img.naturalHeight * state.scale));
+      const width = imageWidth();
+      const height = imageHeight();
+      state.scale = Math.min(1, state.previewMax / Math.max(width, height));
+      previewCanvas.width = Math.max(1, Math.round(width * state.scale));
+      previewCanvas.height = Math.max(1, Math.round(height * state.scale));
       ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
       ctx.drawImage(img, 0, 0, previewCanvas.width, previewCanvas.height);
 
@@ -470,7 +483,7 @@
 
     function updateMeta() {
       if (state.image) {
-        $("imageMeta").textContent = `Image: ${state.image.naturalWidth} x ${state.image.naturalHeight}`;
+        $("imageMeta").textContent = `Image: ${imageWidth()} x ${imageHeight()}`;
         $("status").textContent = state.imageName;
       } else {
         $("imageMeta").textContent = "Image: -";
@@ -506,10 +519,10 @@
 
         tr.appendChild(cell(enabled));
         tr.appendChild(numberCell(box, "order", 1, 999));
-        tr.appendChild(numberCell(box, "x", 0, state.image.naturalWidth - 1));
-        tr.appendChild(numberCell(box, "y", 0, state.image.naturalHeight - 1));
-        tr.appendChild(numberCell(box, "width", 1, state.image.naturalWidth));
-        tr.appendChild(numberCell(box, "height", 1, state.image.naturalHeight));
+        tr.appendChild(numberCell(box, "x", 0, imageWidth() - 1));
+        tr.appendChild(numberCell(box, "y", 0, imageHeight() - 1));
+        tr.appendChild(numberCell(box, "width", 1, imageWidth()));
+        tr.appendChild(numberCell(box, "height", 1, imageHeight()));
 
         const remove = document.createElement("button");
         remove.textContent = "Delete";
@@ -547,8 +560,8 @@
     }
 
     function clampBox(box) {
-      const maxW = state.image.naturalWidth;
-      const maxH = state.image.naturalHeight;
+      const maxW = imageWidth();
+      const maxH = imageHeight();
       box.x = Math.round(clamp(box.x, 0, maxW - 1));
       box.y = Math.round(clamp(box.y, 0, maxH - 1));
       box.width = Math.round(clamp(box.width, 1, maxW - box.x));
@@ -563,110 +576,349 @@
       drawPreview();
     }
 
-    function analyzeBounds() {
+    function smoothArray(values, windowSize) {
+      const radius = Math.max(0, Math.floor(windowSize / 2));
+      if (radius < 1) return values.slice();
+      const result = new Float32Array(values.length);
+      const prefix = new Float32Array(values.length + 1);
+      for (let i = 0; i < values.length; i++) {
+        prefix[i + 1] = prefix[i] + values[i];
+      }
+      for (let i = 0; i < values.length; i++) {
+        const start = Math.max(0, i - radius);
+        const end = Math.min(values.length - 1, i + radius);
+        result[i] = (prefix[end + 1] - prefix[start]) / Math.max(1, end - start + 1);
+      }
+      return result;
+    }
+
+    function closeGaps(mask, maxGap) {
+      const result = mask.slice();
+      let start = -1;
+      for (let i = 0; i < result.length; i++) {
+        if (!result[i] && start < 0) {
+          start = i;
+        } else if (result[i] && start >= 0) {
+          if (i - start <= maxGap) {
+            for (let j = start; j < i; j++) result[j] = true;
+          }
+          start = -1;
+        }
+      }
+      return result;
+    }
+
+    function activeSegments(mask, minLength) {
+      const found = [];
+      let start = -1;
+      for (let i = 0; i < mask.length; i++) {
+        if (mask[i] && start < 0) {
+          start = i;
+        } else if (!mask[i] && start >= 0) {
+          if (i - start >= minLength) found.push([start, i]);
+          start = -1;
+        }
+      }
+      if (start >= 0 && mask.length - start >= minLength) found.push([start, mask.length]);
+      return found;
+    }
+
+    function percentile(values, p) {
+      const sorted = Array.from(values).sort((a, b) => a - b);
+      if (!sorted.length) return 0;
+      const index = clamp(Math.round((sorted.length - 1) * p / 100), 0, sorted.length - 1);
+      return sorted[index];
+    }
+
+    function analyzeImage() {
       const img = state.image;
       const maxSide = 1200;
-      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const fullWidth = imageWidth();
+      const fullHeight = imageHeight();
+      const scale = Math.min(1, maxSide / Math.max(fullWidth, fullHeight));
       const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      canvas.width = Math.max(1, Math.round(fullWidth * scale));
+      canvas.height = Math.max(1, Math.round(fullHeight * scale));
       const c = canvas.getContext("2d", { willReadFrequently: true });
       c.drawImage(img, 0, 0, canvas.width, canvas.height);
       const data = c.getImageData(0, 0, canvas.width, canvas.height).data;
+      const whiteColumns = new Float32Array(canvas.width);
+      const nonWhiteColumns = new Float32Array(canvas.width);
+      const nonWhiteRows = new Float32Array(canvas.height);
 
-      const border = [];
-      const edge = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) / 35));
-      for (let y = 0; y < canvas.height; y += 2) {
-        for (let x = 0; x < canvas.width; x += 2) {
-          if (x < edge || y < edge || x >= canvas.width - edge || y >= canvas.height - edge) {
-            const i = (y * canvas.width + x) * 4;
-            border.push(luminance(data[i], data[i + 1], data[i + 2]));
-          }
-        }
-      }
-      border.sort((a, b) => a - b);
-      const bg = border[Math.floor(border.length / 2)] || 255;
-      const threshold = 18;
-      let minX = canvas.width;
-      let minY = canvas.height;
-      let maxX = 0;
-      let maxY = 0;
-
-      for (let y = 0; y < canvas.height; y += 2) {
-        for (let x = 0; x < canvas.width; x += 2) {
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
           const i = (y * canvas.width + x) * 4;
-          const diff = Math.abs(luminance(data[i], data[i + 1], data[i + 2]) - bg);
-          if (diff > threshold) {
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
+          const lum = luminance(data[i], data[i + 1], data[i + 2]);
+          const isWhite = lum > 242;
+          if (isWhite) whiteColumns[x] += 1;
+          else {
+            nonWhiteColumns[x] += 1;
+            nonWhiteRows[y] += 1;
           }
         }
       }
 
-      if (maxX <= minX || maxY <= minY) {
-        return { x: 0, y: 0, width: img.naturalWidth, height: img.naturalHeight };
+      for (let x = 0; x < canvas.width; x++) {
+        whiteColumns[x] /= canvas.height;
+        nonWhiteColumns[x] /= canvas.height;
+      }
+      for (let y = 0; y < canvas.height; y++) {
+        nonWhiteRows[y] /= canvas.width;
       }
 
-      const margin = 0.012 / scale;
-      const x = clamp(Math.round(minX / scale - img.naturalWidth * margin), 0, img.naturalWidth - 1);
-      const y = clamp(Math.round(minY / scale - img.naturalHeight * margin), 0, img.naturalHeight - 1);
-      const right = clamp(Math.round(maxX / scale + img.naturalWidth * margin), x + 1, img.naturalWidth);
-      const bottom = clamp(Math.round(maxY / scale + img.naturalHeight * margin), y + 1, img.naturalHeight);
-      return { x, y, width: right - x, height: bottom - y };
+      return {
+        scale,
+        width: canvas.width,
+        height: canvas.height,
+        whiteColumns,
+        nonWhiteColumns,
+        nonWhiteRows,
+        data
+      };
+    }
+
+    function detectVerticalLanes(analysis, forcedLaneCount) {
+      if (forcedLaneCount > 0) {
+        const lanes = [];
+        for (let i = 0; i < forcedLaneCount; i++) {
+          lanes.push([analysis.width * i / forcedLaneCount, analysis.width * (i + 1) / forcedLaneCount]);
+        }
+        return lanes;
+      }
+
+      const whiteProfile = smoothArray(analysis.whiteColumns, Math.max(9, Math.round(analysis.width / 65)));
+      const gaps = activeSegments(
+        Array.from(whiteProfile, (value, index) => value > 0.72 && index > analysis.width * 0.05 && index < analysis.width * 0.95),
+        Math.max(20, Math.round(analysis.width / 18))
+      );
+      const lanes = [];
+      let cursor = 0;
+      gaps.forEach(([start, end]) => {
+        if (start - cursor >= analysis.width * 0.16) lanes.push([cursor, start]);
+        cursor = end;
+      });
+      if (analysis.width - cursor >= analysis.width * 0.16) lanes.push([cursor, analysis.width]);
+      if (lanes.length >= 1 && lanes.length <= 4) return lanes;
+
+      const nonWhiteProfile = smoothArray(analysis.nonWhiteColumns, Math.max(9, Math.round(analysis.width / 80)));
+      const threshold = Math.max(0.05, percentile(nonWhiteProfile, 20));
+      const mask = closeGaps(Array.from(nonWhiteProfile, (value) => value > threshold), Math.max(3, Math.round(analysis.width / 25)));
+      const fallback = activeSegments(mask, Math.max(20, Math.round(analysis.width / 8)));
+      return fallback.length ? fallback : [[0, analysis.width]];
+    }
+
+    function detectHorizontalLanes(analysis, forcedLaneCount) {
+      if (forcedLaneCount > 0) {
+        const lanes = [];
+        for (let i = 0; i < forcedLaneCount; i++) {
+          lanes.push([analysis.height * i / forcedLaneCount, analysis.height * (i + 1) / forcedLaneCount]);
+        }
+        return lanes;
+      }
+      return [[0, analysis.height]];
+    }
+
+    function detectedFrameCount(span, frameAxis, fullAxis, laneCount) {
+      if (laneCount > 1) {
+        return clamp(Math.round(fullAxis / Math.max(frameAxis * 1.08, 1)), 1, 40);
+      }
+      return clamp(Math.round(span / Math.max(frameAxis * 1.08, 1)), 1, 40);
+    }
+
+    function rowPhotoProfile(analysis, x1, x2) {
+      const startX = Math.max(0, Math.floor(x1));
+      const endX = Math.min(analysis.width, Math.ceil(x2));
+      const profile = new Float32Array(analysis.height);
+      for (let y = 0; y < analysis.height; y++) {
+        let active = 0;
+        for (let x = startX; x < endX; x++) {
+          const i = (y * analysis.width + x) * 4;
+          if (luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]) > 36) active += 1;
+        }
+        profile[y] = active / Math.max(1, endX - startX);
+      }
+      return profile;
+    }
+
+    function columnPhotoProfile(analysis, x1, x2, y1, y2) {
+      const startX = Math.max(0, Math.floor(x1));
+      const endX = Math.min(analysis.width, Math.ceil(x2));
+      const startY = Math.max(0, Math.floor(y1));
+      const endY = Math.min(analysis.height, Math.ceil(y2));
+      const profile = new Float32Array(Math.max(1, endX - startX));
+      for (let x = startX; x < endX; x++) {
+        let active = 0;
+        for (let y = startY; y < endY; y++) {
+          const i = (y * analysis.width + x) * 4;
+          if (luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]) > 36) active += 1;
+        }
+        profile[x - startX] = active / Math.max(1, endY - startY);
+      }
+      return { profile, offset: startX };
+    }
+
+    function spanFromProfile(profile, threshold, minLength) {
+      const mask = closeGaps(Array.from(profile, (value) => value > threshold), Math.max(2, Math.round(minLength * 0.12)));
+      const spans = activeSegments(mask, minLength);
+      if (!spans.length) return null;
+      return [Math.min(...spans.map(([start]) => start)), Math.max(...spans.map(([, end]) => end))];
+    }
+
+    function refineVerticalFrame(analysis, laneStart, laneEnd, segmentStart, segmentEnd) {
+      const laneWidth = laneEnd - laneStart;
+      const inset = Math.max(2, laneWidth * 0.025);
+      const baseX1 = laneStart + inset;
+      const baseX2 = laneEnd - inset;
+      const rowProfile = smoothArray(rowPhotoProfile(analysis, baseX1, baseX2), Math.max(3, Math.round(laneWidth * 0.015)));
+      const localRows = rowProfile.slice(Math.max(0, Math.floor(segmentStart)), Math.min(analysis.height, Math.ceil(segmentEnd)));
+      const rowThreshold = Math.max(0.08, Math.min(0.35, percentile(localRows, 18) * 0.7));
+      const localY = spanFromProfile(localRows, rowThreshold, Math.max(3, Math.round(laneWidth * 0.08)));
+      let y1 = segmentStart;
+      let y2 = segmentEnd;
+      if (localY) {
+        y1 = Math.max(segmentStart, segmentStart + localY[0]);
+        y2 = Math.min(segmentEnd, segmentStart + localY[1]);
+      }
+
+      const columns = columnPhotoProfile(analysis, baseX1, baseX2, y1, y2);
+      const smoothedColumns = smoothArray(columns.profile, Math.max(3, Math.round(laneWidth * 0.018)));
+      const colThreshold = Math.max(0.08, Math.min(0.5, percentile(smoothedColumns, 20) * 0.75));
+      const localX = spanFromProfile(smoothedColumns, colThreshold, Math.max(4, Math.round(laneWidth * 0.35)));
+      let x1 = baseX1;
+      let x2 = baseX2;
+      if (localX && localX[1] - localX[0] >= laneWidth * 0.45) {
+        x1 = columns.offset + localX[0];
+        x2 = columns.offset + localX[1];
+      }
+
+      const pad = Math.max(1, laneWidth * 0.006);
+      return {
+        x: (x1 - pad) / analysis.scale,
+        y: (y1 - pad) / analysis.scale,
+        width: (x2 - x1 + pad * 2) / analysis.scale,
+        height: (y2 - y1 + pad * 2) / analysis.scale
+      };
+    }
+
+    function verticalPhotoSegments(analysis, laneStart, laneEnd, forcedFrames) {
+      const laneWidth = laneEnd - laneStart;
+      const inset = Math.max(2, laneWidth * 0.025);
+      const profile = smoothArray(
+        rowPhotoProfile(analysis, laneStart + inset, laneEnd - inset),
+        Math.max(5, Math.round(laneWidth * 0.035))
+      );
+      const threshold = Math.max(0.10, Math.min(0.48, percentile(profile, 34) * 0.72));
+      const mask = closeGaps(Array.from(profile, (value) => value > threshold), Math.max(4, Math.round(laneWidth * 0.08)));
+      let segments = activeSegments(mask, Math.max(12, Math.round(laneWidth * 0.28)))
+        .filter(([start, end]) => end - start >= laneWidth * 0.34);
+
+      if (forcedFrames > 0 && segments.length !== forcedFrames) {
+        const activeSpan = segments.length
+          ? [Math.min(...segments.map(([start]) => start)), Math.max(...segments.map(([, end]) => end))]
+          : [0, analysis.height];
+        const pitch = (activeSpan[1] - activeSpan[0]) / forcedFrames;
+        segments = [];
+        for (let i = 0; i < forcedFrames; i++) {
+          segments.push([activeSpan[0] + i * pitch, activeSpan[0] + (i + 1) * pitch]);
+        }
+      }
+
+      if (!segments.length) {
+        const estimated = detectedFrameCount(analysis.height, laneWidth * 2 / 3, analysis.height, 1);
+        const pitch = analysis.height / estimated;
+        for (let i = 0; i < estimated; i++) segments.push([i * pitch, (i + 1) * pitch]);
+      }
+
+      return segments;
+    }
+
+    function rowSpanForVerticalLane(analysis, laneStart, laneEnd, frameHeight, laneCount) {
+      if (laneCount > 1) return [0, analysis.height];
+      const startX = Math.max(0, Math.floor(laneStart));
+      const endX = Math.min(analysis.width, Math.ceil(laneEnd));
+      const profile = new Float32Array(analysis.height);
+      for (let y = 0; y < analysis.height; y++) {
+        let active = 0;
+        for (let x = startX; x < endX; x++) {
+          const i = (y * analysis.width + x) * 4;
+          if (luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]) <= 242) active += 1;
+        }
+        profile[y] = active / Math.max(1, endX - startX);
+      }
+      const smoothed = smoothArray(profile, Math.max(7, Math.round(frameHeight * 0.04)));
+      const threshold = Math.max(0.08, percentile(smoothed, 22));
+      const mask = closeGaps(Array.from(smoothed, (value) => value > threshold), Math.max(3, Math.round(frameHeight * 0.08)));
+      const spans = activeSegments(mask, Math.max(20, Math.round(frameHeight * 0.35)));
+      if (!spans.length) return [0, analysis.height];
+      return [Math.min(...spans.map(([start]) => start)), Math.max(...spans.map(([, end]) => end))];
     }
 
     function detectBoxes() {
       const img = state.image;
-      const bounds = analyzeBounds();
+      const analysis = analyzeImage();
       const orientationSetting = $("orientation").value;
       const orientation = orientationSetting === "auto"
-        ? (bounds.width >= bounds.height ? "horizontal" : "vertical")
+        ? (imageWidth() >= imageHeight() ? "horizontal" : "vertical")
         : orientationSetting;
-      const lanes = Number($("lanes").value) || 1;
-      const frames = clamp(Number($("frames").value) || 1, 1, 80);
-      const landscape = $("aspect").value === "landscape";
+      const forcedLanes = $("lanes").value === "auto" ? 0 : Number($("lanes").value) || 1;
+      const forcedFrames = Number($("frames").value) || 0;
+      const cropMode = $("aspect").value;
+      const landscape = cropMode !== "portrait";
       const padding = (Number($("padding").value) || 0) / 100;
       const boxes = [];
 
-      for (let lane = 0; lane < lanes; lane++) {
-        if (orientation === "horizontal") {
-          const laneY = bounds.y + bounds.height * lane / lanes;
-          const laneH = bounds.height / lanes;
-          let cropH = laneH * 0.88;
-          let cropW = landscape ? cropH * 1.5 : cropH / 1.5;
-          if (cropW * frames > bounds.width * 1.05) {
-            cropW = bounds.width / frames * 0.96;
-            cropH = landscape ? cropW / 1.5 : cropW * 1.5;
-          }
-          const gap = frames > 1 ? (bounds.width - cropW * frames) / (frames - 1) : 0;
-          const y = laneY + (laneH - cropH) / 2;
+      if (orientation === "horizontal") {
+        const lanes = detectHorizontalLanes(analysis, forcedLanes);
+        lanes.forEach(([laneStart, laneEnd]) => {
+          const laneHeight = laneEnd - laneStart;
+          const cropHeight = laneHeight * 0.9 / analysis.scale;
+          const cropWidth = (landscape ? cropHeight * 1.5 : cropHeight / 1.5);
+          const frames = forcedFrames || detectedFrameCount(imageWidth(), cropWidth, imageWidth(), lanes.length);
+          const pitch = imageWidth() / frames;
+          const y = (laneStart + (laneHeight - cropHeight * analysis.scale) / 2) / analysis.scale;
           for (let frame = 0; frame < frames; frame++) {
-            const x = bounds.x + frame * (cropW + gap);
-            boxes.push(makeBox(x, y, cropW, cropH, boxes.length + 1, padding, img));
+            const x = frame * pitch + (pitch - cropWidth) / 2;
+            boxes.push(makeBox(x, y, cropWidth, cropHeight, boxes.length + 1, padding, img));
           }
-        } else {
-          const laneX = bounds.x + bounds.width * lane / lanes;
-          const laneW = bounds.width / lanes;
-          let cropW = laneW * 0.88;
-          let cropH = landscape ? cropW / 1.5 : cropW * 1.5;
-          if (cropH * frames > bounds.height * 1.05) {
-            cropH = bounds.height / frames * 0.96;
-            cropW = landscape ? cropH * 1.5 : cropH / 1.5;
+        });
+      } else {
+        const lanes = detectVerticalLanes(analysis, forcedLanes);
+        lanes.forEach(([laneStart, laneEnd]) => {
+          if (cropMode === "detected") {
+            verticalPhotoSegments(analysis, laneStart, laneEnd, forcedFrames).forEach(([start, end]) => {
+              const refined = refineVerticalFrame(analysis, laneStart, laneEnd, start, end);
+              boxes.push(makeBox(refined.x, refined.y, refined.width, refined.height, boxes.length + 1, padding, img));
+            });
+            return;
           }
-          const gap = frames > 1 ? (bounds.height - cropH * frames) / (frames - 1) : 0;
-          const x = laneX + (laneW - cropW) / 2;
+
+          const laneWidth = laneEnd - laneStart;
+          const apertureInset = Math.max(2, laneWidth * (lanes.length > 1 ? 0.035 : 0.025));
+          const cropWidthPreview = Math.max(8, laneWidth - apertureInset * 2);
+          const cropHeightPreview = landscape ? cropWidthPreview / 1.5 : cropWidthPreview * 1.5;
+          const outerFrameHeightPreview = landscape ? laneWidth / 1.5 : laneWidth * 1.5;
+          const [spanStart, spanEnd] = rowSpanForVerticalLane(analysis, laneStart, laneEnd, outerFrameHeightPreview, lanes.length);
+          const frames = forcedFrames || detectedFrameCount(spanEnd - spanStart, outerFrameHeightPreview, analysis.height, lanes.length);
+          const pitchPreview = (spanEnd - spanStart) / frames;
+          const pitch = pitchPreview / analysis.scale;
+          const cropWidth = cropWidthPreview / analysis.scale;
+          const cropHeight = cropHeightPreview / analysis.scale;
+          const x = (laneStart + apertureInset) / analysis.scale;
           for (let frame = 0; frame < frames; frame++) {
-            const y = bounds.y + frame * (cropH + gap);
-            boxes.push(makeBox(x, y, cropW, cropH, boxes.length + 1, padding, img));
+            const y = spanStart / analysis.scale + frame * pitch + (pitch - cropHeight) / 2;
+            boxes.push(makeBox(x, y, cropWidth, cropHeight, boxes.length + 1, padding, img));
           }
+        });
+        if (lanes.length > 1) {
+          boxes.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+          boxes.forEach((box, index) => box.order = index + 1);
         }
       }
 
       state.boxes = boxes;
       state.selected = boxes.length ? 0 : -1;
-      setMessage(`Detected ${boxes.length} crop box${boxes.length === 1 ? "" : "es"}.`);
+      setMessage(`Detected ${boxes.length} crop box${boxes.length === 1 ? "" : "es"} using ${cropMode === "detected" ? "photo bounds" : "fixed aspect"}.`);
       render();
     }
 
@@ -716,22 +968,57 @@
       setMessage("ZIP is ready.");
     }
 
-    $("fileInput").addEventListener("change", (event) => {
-      const file = event.target.files[0];
-      if (!file) return;
+    function setLoadedImage(source, name) {
+      if (state.image && state.image.src && state.image.src.startsWith("blob:")) URL.revokeObjectURL(state.image.src);
+      state.image = source;
+      state.imageName = name;
+      state.boxes = [];
+      state.selected = -1;
+      $("downloadLink").style.display = "none";
+      setMessage("Image loaded.");
+      render();
+    }
+
+    async function loadTiff(file) {
+      if (!window.UTIF) throw new Error("TIFF decoder did not load.");
+      setMessage("Decoding TIFF...");
+      const buffer = await file.arrayBuffer();
+      const ifds = UTIF.decode(buffer);
+      if (!ifds.length) throw new Error("No image found in TIFF.");
+      UTIF.decodeImage(buffer, ifds[0]);
+      const rgba = UTIF.toRGBA8(ifds[0]);
+      const width = ifds[0].width;
+      const height = ifds[0].height;
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const c = canvas.getContext("2d");
+      c.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+      setLoadedImage(canvas, file.name);
+    }
+
+    async function loadBrowserImage(file) {
       const url = URL.createObjectURL(file);
       const img = new Image();
-      img.onload = () => {
-        if (state.image && state.image.src.startsWith("blob:")) URL.revokeObjectURL(state.image.src);
-        state.image = img;
-        state.imageName = file.name;
-        state.boxes = [];
-        state.selected = -1;
-        $("downloadLink").style.display = "none";
-        setMessage("Image loaded.");
-        render();
-      };
-      img.src = url;
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = url;
+      });
+      setLoadedImage(img, file.name);
+    }
+
+    $("fileInput").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        const isTiff = /\.(tif|tiff)$/i.test(file.name) || /tiff/i.test(file.type);
+        if (isTiff) await loadTiff(file);
+        else await loadBrowserImage(file);
+      } catch (error) {
+        console.error(error);
+        setMessage(`Could not load image: ${error.message || error}`);
+      }
     });
 
     $("detectBtn").addEventListener("click", detectBoxes);
@@ -746,13 +1033,13 @@
     $("addBtn").addEventListener("click", () => {
       if (!state.image) return;
       const landscape = $("aspect").value === "landscape";
-      const width = Math.round(state.image.naturalWidth * 0.35);
+      const width = Math.round(imageWidth() * 0.35);
       const height = Math.round(landscape ? width / 1.5 : width * 1.5);
       const box = {
         enabled: true,
         order: state.boxes.length + 1,
-        x: Math.round((state.image.naturalWidth - width) / 2),
-        y: Math.round((state.image.naturalHeight - height) / 2),
+        x: Math.round((imageWidth() - width) / 2),
+        y: Math.round((imageHeight() - height) / 2),
         width,
         height
       };
