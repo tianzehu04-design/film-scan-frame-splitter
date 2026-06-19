@@ -351,6 +351,10 @@
         <label for="rowGap">Row gap safety %</label>
         <input id="rowGap" type="number" min="2" max="20" step="1" value="8">
       </div>
+      <div class="control">
+        <label for="boundarySensitivity">Boundary sensitivity %</label>
+        <input id="boundarySensitivity" type="number" min="70" max="95" step="1" value="82">
+      </div>
 
       <h2>Export</h2>
       <div class="control">
@@ -738,48 +742,57 @@
       return clamp(Math.round(axisLength / (nominalHeight * spacingFactor)), 1, 40);
     }
 
-    function rowDarkProfile(analysis, x1, x2) {
+    function rowBlankProfile(analysis, x1, x2) {
       const startX = Math.max(0, Math.floor(x1));
       const endX = Math.min(analysis.width, Math.ceil(x2));
       const profile = new Float32Array(analysis.height);
       for (let y = 0; y < analysis.height; y++) {
         let dark = 0;
+        let light = 0;
         let sum = 0;
         let sumSquares = 0;
         for (let x = startX; x < endX; x++) {
           const i = (y * analysis.width + x) * 4;
           const lum = luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]);
           if (lum < 58) dark += 1;
+          if (lum > 232) light += 1;
           sum += lum;
           sumSquares += lum * lum;
         }
         const width = Math.max(1, endX - startX);
         const darkRatio = dark / width;
+        const lightRatio = light / width;
         const mean = sum / width;
         const variance = Math.max(0, sumSquares / width - mean * mean);
         const std = Math.sqrt(variance);
-        let score = darkRatio;
-        if (mean > 58) score *= 0.55;
-        if (std > 42) score *= 0.55;
-        profile[y] = score;
+        let darkScore = darkRatio;
+        let lightScore = lightRatio;
+        if (mean > 72) darkScore *= 0.45;
+        if (mean < 218) lightScore *= 0.45;
+        if (std > 38) {
+          darkScore *= 0.40;
+          lightScore *= 0.40;
+        }
+        profile[y] = Math.max(darkScore, lightScore);
       }
       return profile;
     }
 
-    function separatorBandsForLane(analysis, laneStart, laneEnd) {
+    function separatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity) {
       const laneWidth = laneEnd - laneStart;
       const inset = Math.max(2, laneWidth * 0.04);
       const profile = smoothArray(
-        rowDarkProfile(analysis, laneStart + inset, laneEnd - inset),
+        rowBlankProfile(analysis, laneStart + inset, laneEnd - inset),
         Math.max(3, Math.round(laneWidth * 0.018))
       );
-      const mask = Array.from(profile, (value) => value > 0.86);
+      const threshold = clamp(boundarySensitivity || 82, 70, 95) / 100;
+      const mask = Array.from(profile, (value) => value > threshold);
       return activeSegments(mask, Math.max(2, Math.round(laneWidth * 0.018)))
         .filter(([start, end]) => end - start <= Math.max(8, laneWidth * 0.28))
         .map(([start, end]) => ({ start, end, center: (start + end) / 2 }));
     }
 
-    function smartVerticalFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent) {
+    function smartVerticalFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent, boundarySensitivity) {
       const laneWidth = laneEnd - laneStart;
       const inset = Math.max(2, laneWidth * (laneCount > 1 ? 0.032 : 0.024));
       const cropWidthPreview = Math.max(8, laneWidth - inset * 2);
@@ -789,20 +802,22 @@
       const gapFactor = clamp(rowGapPercent || 8, 2, 20) / 100;
       const topInset = Math.max(0.5, pitchPreview * gapFactor * 0.035);
       const bottomInset = Math.max(1, pitchPreview * gapFactor * 0.14);
-      const maxHeightPreview = Math.min(pitchPreview * (1 - gapFactor * 0.45), nearAspectHeight * 1.22);
+      const maxHeightPreview = Math.min(pitchPreview * (1 - gapFactor * 0.25), nearAspectHeight * 1.35);
       const minHeightPreview = Math.min(maxHeightPreview, nearAspectHeight * 0.72);
       const x = (laneStart + inset) / analysis.scale;
       const width = cropWidthPreview / analysis.scale;
-      const bands = separatorBandsForLane(analysis, laneStart, laneEnd);
+      const bands = separatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity);
       const boundaries = [];
 
       for (let boundaryIndex = 0; boundaryIndex <= frames; boundaryIndex++) {
         if (boundaryIndex === 0) {
-          boundaries.push({ start: 0, end: 0 });
+          const firstBand = bands.find((band) => band.start <= pitchPreview * 0.20);
+          boundaries.push(firstBand || { start: 0, end: 0 });
           continue;
         }
         if (boundaryIndex === frames) {
-          boundaries.push({ start: analysis.height, end: analysis.height });
+          const lastBand = [...bands].reverse().find((band) => band.end >= analysis.height - pitchPreview * 0.20);
+          boundaries.push(lastBand || { start: analysis.height, end: analysis.height });
           continue;
         }
 
@@ -1002,6 +1017,7 @@
       const landscape = cropMode !== "portrait";
       const padding = (Number($("padding").value) || 0) / 100;
       const rowGapPercent = Number($("rowGap").value) || 8;
+      const boundarySensitivity = Number($("boundarySensitivity").value) || 82;
       const boxes = [];
 
       if (orientation === "horizontal") {
@@ -1022,7 +1038,7 @@
         const lanes = detectVerticalLanes(analysis, forcedLanes);
         lanes.forEach(([laneStart, laneEnd]) => {
           if (cropMode === "smart") {
-            smartVerticalFrameBoxes(analysis, laneStart, laneEnd, lanes.length, forcedFrames, rowGapPercent).forEach((box) => {
+            smartVerticalFrameBoxes(analysis, laneStart, laneEnd, lanes.length, forcedFrames, rowGapPercent, boundarySensitivity).forEach((box) => {
               boxes.push(makeBox(box.x, box.y, box.width, box.height, boxes.length + 1, padding, img));
             });
             return;
