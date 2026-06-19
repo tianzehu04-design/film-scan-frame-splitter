@@ -792,6 +792,16 @@
         .map(([start, end]) => ({ start, end, center: (start + end) / 2 }));
     }
 
+    function cappedSeparatorBoundary(band, target, pitch, gapFactor) {
+      if (!band) return null;
+      const halfGap = Math.max(1.5, pitch * gapFactor * 0.34);
+      return {
+        start: Math.max(band.start, target - halfGap),
+        end: Math.min(band.end, target + halfGap),
+        center: target
+      };
+    }
+
     function smartVerticalFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent, boundarySensitivity) {
       const laneWidth = laneEnd - laneStart;
       const inset = Math.max(2, laneWidth * (laneCount > 1 ? 0.032 : 0.024));
@@ -833,7 +843,7 @@
         });
 
         if (best) {
-          boundaries.push(best);
+          boundaries.push(cappedSeparatorBoundary(best, target, pitchPreview, gapFactor));
         } else {
           const syntheticHalfGap = Math.max(1, pitchPreview * gapFactor * 0.22);
           boundaries.push({
