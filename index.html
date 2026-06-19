@@ -738,6 +738,34 @@
       return clamp(Math.round(axisLength / (nominalHeight * spacingFactor)), 1, 40);
     }
 
+    function rowDarkProfile(analysis, x1, x2) {
+      const startX = Math.max(0, Math.floor(x1));
+      const endX = Math.min(analysis.width, Math.ceil(x2));
+      const profile = new Float32Array(analysis.height);
+      for (let y = 0; y < analysis.height; y++) {
+        let dark = 0;
+        for (let x = startX; x < endX; x++) {
+          const i = (y * analysis.width + x) * 4;
+          if (luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]) < 48) dark += 1;
+        }
+        profile[y] = dark / Math.max(1, endX - startX);
+      }
+      return profile;
+    }
+
+    function separatorBandsForLane(analysis, laneStart, laneEnd) {
+      const laneWidth = laneEnd - laneStart;
+      const inset = Math.max(2, laneWidth * 0.04);
+      const profile = smoothArray(
+        rowDarkProfile(analysis, laneStart + inset, laneEnd - inset),
+        Math.max(3, Math.round(laneWidth * 0.018))
+      );
+      const mask = Array.from(profile, (value) => value > 0.78);
+      return activeSegments(mask, Math.max(2, Math.round(laneWidth * 0.018)))
+        .filter(([start, end]) => end - start <= Math.max(8, laneWidth * 0.28))
+        .map(([start, end]) => ({ start, end, center: (start + end) / 2 }));
+    }
+
     function smartVerticalFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent) {
       const laneWidth = laneEnd - laneStart;
       const inset = Math.max(2, laneWidth * (laneCount > 1 ? 0.032 : 0.024));
@@ -746,19 +774,74 @@
       const pitchPreview = analysis.height / frames;
       const nearAspectHeight = cropWidthPreview / 1.5;
       const gapFactor = clamp(rowGapPercent || 12, 4, 24) / 100;
-      const cropHeightPreview = Math.min(pitchPreview * (1 - gapFactor), nearAspectHeight * 1.08);
+      const separatorInset = Math.max(1, pitchPreview * gapFactor * 0.16);
+      const maxHeightPreview = Math.min(pitchPreview * (1 - gapFactor), nearAspectHeight * 1.10);
+      const minHeightPreview = Math.min(maxHeightPreview, nearAspectHeight * 0.76);
       const x = (laneStart + inset) / analysis.scale;
       const width = cropWidthPreview / analysis.scale;
+      const bands = separatorBandsForLane(analysis, laneStart, laneEnd);
+      const boundaries = [];
+
+      for (let boundaryIndex = 0; boundaryIndex <= frames; boundaryIndex++) {
+        if (boundaryIndex === 0) {
+          boundaries.push({ start: 0, end: 0 });
+          continue;
+        }
+        if (boundaryIndex === frames) {
+          boundaries.push({ start: analysis.height, end: analysis.height });
+          continue;
+        }
+
+        const target = boundaryIndex * pitchPreview;
+        let best = null;
+        let bestDistance = Infinity;
+        bands.forEach((band) => {
+          const distance = Math.abs(band.center - target);
+          if (distance < bestDistance && distance <= pitchPreview * 0.34) {
+            best = band;
+            bestDistance = distance;
+          }
+        });
+
+        if (best) {
+          boundaries.push(best);
+        } else {
+          const syntheticHalfGap = Math.max(2, pitchPreview * gapFactor * 0.42);
+          boundaries.push({
+            start: target - syntheticHalfGap,
+            end: target + syntheticHalfGap
+          });
+        }
+      }
 
       const boxes = [];
       for (let frame = 0; frame < frames; frame++) {
         const slotStart = frame * pitchPreview;
-        const y = (slotStart + (pitchPreview - cropHeightPreview) / 2) / analysis.scale;
+        const slotEnd = (frame + 1) * pitchPreview;
+        let top = boundaries[frame].end + separatorInset;
+        let bottom = boundaries[frame + 1].start - separatorInset;
+        const intervalCenter = (top + bottom) / 2;
+        let height = bottom - top;
+
+        if (height < minHeightPreview || height > maxHeightPreview) {
+          height = maxHeightPreview;
+          top = intervalCenter - height / 2;
+          bottom = intervalCenter + height / 2;
+        }
+
+        top = Math.max(slotStart + separatorInset, top);
+        bottom = Math.min(slotEnd - separatorInset, bottom);
+        if (bottom - top < minHeightPreview) {
+          const center = (slotStart + slotEnd) / 2;
+          top = center - maxHeightPreview / 2;
+          bottom = center + maxHeightPreview / 2;
+        }
+
         boxes.push({
           x,
-          y,
+          y: top / analysis.scale,
           width,
-          height: cropHeightPreview / analysis.scale
+          height: (bottom - top) / analysis.scale
         });
       }
       return boxes;
