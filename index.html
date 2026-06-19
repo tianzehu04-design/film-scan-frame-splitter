@@ -311,6 +311,7 @@
       <div class="control">
         <label for="aspect">Crop mode</label>
         <select id="aspect">
+          <option value="smart">Smart near-3:2 frames</option>
           <option value="detected">Detected photo bounds</option>
           <option value="landscape">Landscape 3:2</option>
           <option value="portrait">Portrait 2:3</option>
@@ -345,6 +346,10 @@
           <label for="padding">Padding %</label>
           <input id="padding" type="number" min="-10" max="20" step="0.5" value="0">
         </div>
+      </div>
+      <div class="control">
+        <label for="rowGap">Row gap safety %</label>
+        <input id="rowGap" type="number" min="4" max="24" step="1" value="12">
       </div>
 
       <h2>Export</h2>
@@ -726,6 +731,39 @@
       return clamp(Math.round(span / Math.max(frameAxis * 1.08, 1)), 1, 40);
     }
 
+    function smartFrameCount(axisLength, laneWidth, laneCount, forcedFrames) {
+      if (forcedFrames > 0) return clamp(forcedFrames, 1, 80);
+      const nominalHeight = Math.max(1, laneWidth / 1.5);
+      const spacingFactor = laneCount > 1 ? 1.08 : 1.30;
+      return clamp(Math.round(axisLength / (nominalHeight * spacingFactor)), 1, 40);
+    }
+
+    function smartVerticalFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent) {
+      const laneWidth = laneEnd - laneStart;
+      const inset = Math.max(2, laneWidth * (laneCount > 1 ? 0.032 : 0.024));
+      const cropWidthPreview = Math.max(8, laneWidth - inset * 2);
+      const frames = smartFrameCount(analysis.height, laneWidth, laneCount, forcedFrames);
+      const pitchPreview = analysis.height / frames;
+      const nearAspectHeight = cropWidthPreview / 1.5;
+      const gapFactor = clamp(rowGapPercent || 12, 4, 24) / 100;
+      const cropHeightPreview = Math.min(pitchPreview * (1 - gapFactor), nearAspectHeight * 1.08);
+      const x = (laneStart + inset) / analysis.scale;
+      const width = cropWidthPreview / analysis.scale;
+
+      const boxes = [];
+      for (let frame = 0; frame < frames; frame++) {
+        const slotStart = frame * pitchPreview;
+        const y = (slotStart + (pitchPreview - cropHeightPreview) / 2) / analysis.scale;
+        boxes.push({
+          x,
+          y,
+          width,
+          height: cropHeightPreview / analysis.scale
+        });
+      }
+      return boxes;
+    }
+
     function rowPhotoProfile(analysis, x1, x2) {
       const startX = Math.max(0, Math.floor(x1));
       const endX = Math.min(analysis.width, Math.ceil(x2));
@@ -866,6 +904,7 @@
       const cropMode = $("aspect").value;
       const landscape = cropMode !== "portrait";
       const padding = (Number($("padding").value) || 0) / 100;
+      const rowGapPercent = Number($("rowGap").value) || 12;
       const boxes = [];
 
       if (orientation === "horizontal") {
@@ -885,6 +924,13 @@
       } else {
         const lanes = detectVerticalLanes(analysis, forcedLanes);
         lanes.forEach(([laneStart, laneEnd]) => {
+          if (cropMode === "smart") {
+            smartVerticalFrameBoxes(analysis, laneStart, laneEnd, lanes.length, forcedFrames, rowGapPercent).forEach((box) => {
+              boxes.push(makeBox(box.x, box.y, box.width, box.height, boxes.length + 1, padding, img));
+            });
+            return;
+          }
+
           if (cropMode === "detected") {
             verticalPhotoSegments(analysis, laneStart, laneEnd, forcedFrames).forEach(([start, end]) => {
               const refined = refineVerticalFrame(analysis, laneStart, laneEnd, start, end);
@@ -918,7 +964,8 @@
 
       state.boxes = boxes;
       state.selected = boxes.length ? 0 : -1;
-      setMessage(`Detected ${boxes.length} crop box${boxes.length === 1 ? "" : "es"} using ${cropMode === "detected" ? "photo bounds" : "fixed aspect"}.`);
+      const modeLabel = cropMode === "smart" ? "smart regular frames" : cropMode === "detected" ? "photo bounds" : "fixed aspect";
+      setMessage(`Detected ${boxes.length} crop box${boxes.length === 1 ? "" : "es"} using ${modeLabel}.`);
       render();
     }
 
