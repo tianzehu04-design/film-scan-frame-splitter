@@ -792,14 +792,55 @@
         .map(([start, end]) => ({ start, end, center: (start + end) / 2 }));
     }
 
-    function cappedSeparatorBoundary(band, target, pitch, gapFactor) {
-      if (!band) return null;
-      const halfGap = Math.max(1.5, pitch * gapFactor * 0.34);
-      return {
-        start: Math.max(band.start, target - halfGap),
-        end: Math.min(band.end, target + halfGap),
-        center: target
-      };
+    function rowDetailProfile(analysis, x1, x2) {
+      const startX = Math.max(0, Math.floor(x1));
+      const endX = Math.min(analysis.width, Math.ceil(x2));
+      const profile = new Float32Array(analysis.height);
+      for (let y = 0; y < analysis.height; y++) {
+        let sum = 0;
+        let sumSquares = 0;
+        for (let x = startX; x < endX; x++) {
+          const i = (y * analysis.width + x) * 4;
+          const lum = luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]);
+          sum += lum;
+          sumSquares += lum * lum;
+        }
+        const width = Math.max(1, endX - startX);
+        const mean = sum / width;
+        const variance = Math.max(0, sumSquares / width - mean * mean);
+        const std = Math.sqrt(variance);
+        profile[y] = clamp((std - 8) / 42, 0, 1);
+      }
+      return profile;
+    }
+
+    function refineTopBoundary(analysis, laneStart, laneEnd, boundary, slotStart, slotEnd, pitchPreview, topInset) {
+      const laneWidth = laneEnd - laneStart;
+      const inset = Math.max(2, laneWidth * 0.06);
+      const detail = smoothArray(
+        rowDetailProfile(analysis, laneStart + inset, laneEnd - inset),
+        Math.max(3, Math.round(laneWidth * 0.012))
+      );
+      const blank = smoothArray(
+        rowBlankProfile(analysis, laneStart + inset, laneEnd - inset),
+        Math.max(3, Math.round(laneWidth * 0.012))
+      );
+      const searchStart = Math.max(slotStart, boundary.start - pitchPreview * 0.04);
+      const searchEnd = Math.min(slotEnd, boundary.end + pitchPreview * 0.18);
+      const sustain = Math.max(2, Math.round(laneWidth * 0.018));
+
+      for (let y = Math.floor(searchStart); y <= Math.floor(searchEnd - sustain); y++) {
+        let votes = 0;
+        for (let offset = 0; offset < sustain; offset++) {
+          const index = y + offset;
+          if (detail[index] > 0.18 || blank[index] < 0.58) votes += 1;
+        }
+        if (votes >= Math.ceil(sustain * 0.7)) {
+          return Math.max(slotStart + topInset, y + topInset);
+        }
+      }
+
+      return Math.max(slotStart + topInset, boundary.end + topInset);
     }
 
     function smartVerticalFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent, boundarySensitivity) {
@@ -843,7 +884,7 @@
         });
 
         if (best) {
-          boundaries.push(cappedSeparatorBoundary(best, target, pitchPreview, gapFactor));
+          boundaries.push(best);
         } else {
           const syntheticHalfGap = Math.max(1, pitchPreview * gapFactor * 0.22);
           boundaries.push({
@@ -857,7 +898,7 @@
       for (let frame = 0; frame < frames; frame++) {
         const slotStart = frame * pitchPreview;
         const slotEnd = (frame + 1) * pitchPreview;
-        let top = boundaries[frame].end + topInset;
+        let top = refineTopBoundary(analysis, laneStart, laneEnd, boundaries[frame], slotStart, slotEnd, pitchPreview, topInset);
         let bottom = boundaries[frame + 1].start - bottomInset;
         const intervalCenter = (top + bottom) / 2;
         let height = bottom - top;
