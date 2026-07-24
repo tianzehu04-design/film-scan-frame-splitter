@@ -32,6 +32,7 @@
 
     body {
       margin: 0;
+      overflow: hidden;
       background:
         radial-gradient(circle at 88% 4%, rgba(194, 138, 92, 0.18), transparent 30rem),
         #e9dfd4;
@@ -49,7 +50,10 @@
     .app {
       display: grid;
       grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
-      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
+      min-height: 0;
+      overflow: hidden;
     }
 
     aside {
@@ -57,6 +61,9 @@
       background: rgba(251, 247, 241, 0.97);
       padding: 22px;
       overflow-y: auto;
+      min-height: 0;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
       box-shadow: 12px 0 40px rgba(68, 43, 29, 0.06);
       z-index: 1;
     }
@@ -65,6 +72,8 @@
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
       min-width: 0;
+      min-height: 0;
+      overflow: hidden;
     }
 
     header {
@@ -226,11 +235,15 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(300px, 430px);
       min-height: 0;
+      overflow: hidden;
     }
 
     .preview-wrap {
       position: relative;
       overflow: auto;
+      min-height: 0;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable both-edges;
       background-color: #d9cec2;
       background-image:
         linear-gradient(45deg, rgba(74, 52, 41, 0.035) 25%, transparent 25%),
@@ -312,6 +325,9 @@
       border-left: 1px solid var(--line);
       padding: 22px;
       overflow: auto;
+      min-height: 0;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
       background: rgba(251, 247, 241, 0.98);
     }
 
@@ -342,6 +358,9 @@
       background: var(--panel);
       color: var(--muted);
       font-size: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 2;
     }
 
     tr.selected td {
@@ -513,19 +532,31 @@
     }
 
     @media (max-width: 1050px) {
+      body {
+        overflow: auto;
+      }
+
       .app,
       .workspace {
         grid-template-columns: 1fr;
+      }
+
+      .app {
+        height: auto;
+        min-height: 100vh;
+        overflow: visible;
       }
 
       aside,
       .editor {
         border: 0;
         border-bottom: 1px solid var(--line);
+        overflow: visible;
       }
 
       main {
         display: block;
+        overflow: visible;
       }
 
       aside {
