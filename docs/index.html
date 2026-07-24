@@ -387,6 +387,76 @@
       margin: 0 0 12px;
     }
 
+    .inspector {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      box-shadow: 0 8px 22px rgba(68, 43, 29, 0.06);
+      overflow: hidden;
+    }
+
+    .inspector-empty {
+      min-height: 220px;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    .inspector-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .inspector-head h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: -0.01em;
+    }
+
+    .enabled-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin: 0;
+      font-size: 12px;
+    }
+
+    .inspector-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      padding: 18px;
+    }
+
+    .inspector-field {
+      margin: 0;
+    }
+
+    .inspector-field input {
+      width: 100%;
+    }
+
+    .inspector-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 0 18px 18px;
+    }
+
+    .inspector-actions .delete {
+      grid-column: 1 / -1;
+      color: var(--accent-strong);
+      border-color: rgba(155, 83, 54, 0.35);
+    }
+
     .pill {
       border: 1px solid var(--line);
       border-radius: 999px;
@@ -691,22 +761,7 @@
             <span class="pill" id="imageMeta">Image: -</span>
             <span class="pill" id="boxMeta">Frames: 0</span>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>On</th>
-                  <th>#</th>
-                  <th>X</th>
-                  <th>Y</th>
-                  <th>Width</th>
-                  <th>Height</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="boxTable"></tbody>
-            </table>
-          </div>
+          <div class="inspector" id="frameInspector"></div>
         </div>
       </section>
     </main>
@@ -802,54 +857,7 @@
       $("resetBtn").disabled = !state.image;
     }
 
-    function renderTable() {
-      const tbody = $("boxTable");
-      tbody.replaceChildren();
-      sortedBoxes().forEach((box) => {
-        const index = state.boxes.indexOf(box);
-        const tr = document.createElement("tr");
-        if (index === state.selected) tr.classList.add("selected");
-        tr.addEventListener("click", () => {
-          state.selected = index;
-          render();
-        });
-
-        const enabled = document.createElement("input");
-        enabled.type = "checkbox";
-        enabled.checked = box.enabled;
-        enabled.addEventListener("change", () => {
-          box.enabled = enabled.checked;
-          render();
-        });
-
-        tr.appendChild(cell(enabled));
-        tr.appendChild(numberCell(box, "order", 1, 999));
-        tr.appendChild(numberCell(box, "x", 0, imageWidth() - 1));
-        tr.appendChild(numberCell(box, "y", 0, imageHeight() - 1));
-        tr.appendChild(numberCell(box, "width", 1, imageWidth()));
-        tr.appendChild(numberCell(box, "height", 1, imageHeight()));
-
-        const remove = document.createElement("button");
-        remove.textContent = "Delete";
-        remove.addEventListener("click", (event) => {
-          event.stopPropagation();
-          state.boxes.splice(index, 1);
-          state.boxes.forEach((item, order) => item.order = order + 1);
-          state.selected = -1;
-          render();
-        });
-        tr.appendChild(cell(remove));
-        tbody.appendChild(tr);
-      });
-    }
-
-    function cell(child) {
-      const td = document.createElement("td");
-      td.appendChild(child);
-      return td;
-    }
-
-    function numberCell(box, key, min, max) {
+    function inspectorNumberInput(box, key, min, max) {
       const input = document.createElement("input");
       input.type = "number";
       input.min = min;
@@ -861,7 +869,81 @@
         clampBox(box);
         render();
       });
-      return cell(input);
+      return input;
+    }
+
+    function renderInspector() {
+      const inspector = $("frameInspector");
+      inspector.replaceChildren();
+      if (!state.image || state.selected < 0 || !state.boxes[state.selected]) {
+        const empty = document.createElement("div");
+        empty.className = "inspector-empty";
+        empty.textContent = state.image
+          ? "Click a frame in the preview to view and adjust its crop data."
+          : "Upload a film scan, then click a detected frame to edit it.";
+        inspector.appendChild(empty);
+        return;
+      }
+
+      const box = state.boxes[state.selected];
+      const head = document.createElement("div");
+      head.className = "inspector-head";
+      const title = document.createElement("h2");
+      title.textContent = `Frame ${box.order}`;
+      const enabledLabel = document.createElement("label");
+      enabledLabel.className = "enabled-control";
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = box.enabled;
+      enabled.addEventListener("change", () => {
+        box.enabled = enabled.checked;
+        render();
+      });
+      enabledLabel.append(enabled, "Include in export");
+      head.append(title, enabledLabel);
+
+      const grid = document.createElement("div");
+      grid.className = "inspector-grid";
+      [
+        ["Frame number", "order", 1, 999],
+        ["X position", "x", 0, imageWidth() - 1],
+        ["Y position", "y", 0, imageHeight() - 1],
+        ["Width", "width", 1, imageWidth()],
+        ["Height", "height", 1, imageHeight()]
+      ].forEach(([labelText, key, min, max]) => {
+        const label = document.createElement("label");
+        label.className = "inspector-field";
+        label.append(labelText, inspectorNumberInput(box, key, min, max));
+        grid.appendChild(label);
+      });
+
+      const actions = document.createElement("div");
+      actions.className = "inspector-actions";
+      const previous = document.createElement("button");
+      previous.textContent = "Previous frame";
+      previous.disabled = state.selected === 0;
+      previous.addEventListener("click", () => {
+        state.selected = Math.max(0, state.selected - 1);
+        render();
+      });
+      const next = document.createElement("button");
+      next.textContent = "Next frame";
+      next.disabled = state.selected === state.boxes.length - 1;
+      next.addEventListener("click", () => {
+        state.selected = Math.min(state.boxes.length - 1, state.selected + 1);
+        render();
+      });
+      const remove = document.createElement("button");
+      remove.className = "delete";
+      remove.textContent = "Delete frame";
+      remove.addEventListener("click", () => {
+        state.boxes.splice(state.selected, 1);
+        state.boxes.forEach((item, order) => item.order = order + 1);
+        state.selected = state.boxes.length ? Math.min(state.selected, state.boxes.length - 1) : -1;
+        render();
+      });
+      actions.append(previous, next, remove);
+      inspector.append(head, grid, actions);
     }
 
     function clampBox(box) {
@@ -877,7 +959,7 @@
       $("emptyState").hidden = Boolean(state.image);
       previewCanvas.hidden = !state.image;
       updateMeta();
-      renderTable();
+      renderInspector();
       drawPreview();
     }
 
