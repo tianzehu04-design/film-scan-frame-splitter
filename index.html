@@ -112,32 +112,10 @@
       position: relative;
     }
 
-    .brand-mark::before {
-      content: "";
-      position: absolute;
-      width: 28px;
-      height: 24px;
-      left: 8px;
-      top: 10px;
-      border: 2px solid var(--cream);
-      border-radius: 3px;
-      background:
-        linear-gradient(
-          to bottom,
-          var(--cream) 0 4px,
-          transparent 4px 18px,
-          var(--cream) 18px 22px
-        );
-    }
-
-    .brand-mark::after {
-      content: "";
-      position: absolute;
-      width: 2px;
-      height: 14px;
-      left: 21px;
-      top: 15px;
-      background: var(--cream);
+    .brand-mark svg {
+      display: block;
+      width: 100%;
+      height: 100%;
     }
 
     .brand small {
@@ -560,7 +538,15 @@
   <div class="app">
     <aside>
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64">
+            <path d="M8 25a7 7 0 0 1 7-7h9l4-7h12l4 7h5a7 7 0 0 1 7 7v22a7 7 0 0 1-7 7H15a7 7 0 0 1-7-7Z" fill="#f4ecdf"/>
+            <circle cx="33" cy="36" r="12" fill="#4a3429"/>
+            <circle cx="33" cy="36" r="7" fill="#c28a5c"/>
+            <circle cx="30" cy="33" r="2" fill="#f4ecdf"/>
+            <circle cx="49" cy="26" r="2.5" fill="#9b5336"/>
+          </svg>
+        </span>
         <div>
           <h1>Frame Splitter</h1>
           <small>Film scan crop studio</small>
