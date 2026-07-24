@@ -267,6 +267,10 @@
       padding: 20px;
     }
 
+    .preview-wrap:has(.empty:not([hidden])) {
+      place-items: stretch;
+    }
+
     canvas {
       display: block;
       max-width: 100%;
@@ -281,8 +285,9 @@
     }
 
     .empty {
-      width: min(640px, calc(100% - 32px));
-      min-height: 300px;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
       border: 1.5px dashed var(--line-strong);
       border-radius: 16px;
       background: rgba(251, 247, 241, 0.9);
@@ -312,35 +317,10 @@
     }
 
     .empty-icon {
-      width: 58px;
-      height: 46px;
+      display: block;
+      width: 68px;
+      height: 56px;
       margin: 0 auto 14px;
-      border: 3px solid var(--cocoa);
-      border-radius: 10px;
-      background: var(--cream);
-      position: relative;
-    }
-
-    .empty-icon::before {
-      content: "";
-      position: absolute;
-      width: 18px;
-      height: 18px;
-      left: 17px;
-      top: 11px;
-      border: 3px solid var(--accent);
-      border-radius: 50%;
-    }
-
-    .empty-icon::after {
-      content: "";
-      position: absolute;
-      width: 18px;
-      height: 6px;
-      left: 6px;
-      top: -8px;
-      border-radius: 4px 4px 0 0;
-      background: var(--cocoa);
     }
 
     .empty strong {
@@ -675,7 +655,13 @@
         <div class="preview-wrap">
           <label class="empty" id="emptyState" for="fileInput">
             <div class="empty-content">
-              <div class="empty-icon" aria-hidden="true"></div>
+              <svg class="empty-icon" viewBox="0 0 72 60" aria-hidden="true">
+                <path d="M8 24a8 8 0 0 1 8-8h8l4-7h16l4 7h8a8 8 0 0 1 8 8v23a8 8 0 0 1-8 8H16a8 8 0 0 1-8-8Z" fill="#f4ecdf" stroke="#4a3429" stroke-width="4"/>
+                <circle cx="36" cy="36" r="12" fill="none" stroke="#9b5336" stroke-width="4"/>
+                <circle cx="36" cy="36" r="4" fill="#4a3429"/>
+                <circle cx="55" cy="25" r="2.5" fill="#c28a5c"/>
+                <path d="M31 30a8 8 0 0 1 8-1" fill="none" stroke="#f4ecdf" stroke-width="2.5" stroke-linecap="round"/>
+              </svg>
               <strong>Drop your film scan here</strong>
               or click to choose a JPG, PNG, or TIFF file
             </div>
