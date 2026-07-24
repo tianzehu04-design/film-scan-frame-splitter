@@ -421,6 +421,39 @@
       letter-spacing: -0.01em;
     }
 
+    .crop-editor {
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(45deg, rgba(74, 52, 41, 0.04) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(74, 52, 41, 0.04) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(74, 52, 41, 0.04) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(74, 52, 41, 0.04) 75%),
+        #e7ddd2;
+      background-size: 18px 18px;
+      background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+    }
+
+    .crop-editor canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 3 / 2;
+      border-radius: 9px;
+      background: var(--cocoa);
+      box-shadow: 0 8px 20px rgba(68, 43, 29, 0.16);
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .crop-editor-help {
+      margin: 9px 2px 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+      text-align: center;
+    }
+
     .enabled-control {
       display: inline-flex;
       align-items: center;
@@ -872,6 +905,184 @@
       return input;
     }
 
+    function cropEditorView(box, canvas) {
+      const imageW = imageWidth();
+      const imageH = imageHeight();
+      const paddingX = Math.max(30, box.width * 0.16);
+      const paddingY = Math.max(30, box.height * 0.16);
+      let viewX = Math.max(0, box.x - paddingX);
+      let viewY = Math.max(0, box.y - paddingY);
+      let viewW = Math.min(imageW - viewX, box.width + paddingX * 2);
+      let viewH = Math.min(imageH - viewY, box.height + paddingY * 2);
+      const canvasRatio = canvas.width / canvas.height;
+      const viewRatio = viewW / Math.max(1, viewH);
+
+      if (viewRatio > canvasRatio) {
+        const wantedH = viewW / canvasRatio;
+        viewY = clamp(viewY - (wantedH - viewH) / 2, 0, Math.max(0, imageH - wantedH));
+        viewH = Math.min(imageH, wantedH);
+      } else {
+        const wantedW = viewH * canvasRatio;
+        viewX = clamp(viewX - (wantedW - viewW) / 2, 0, Math.max(0, imageW - wantedW));
+        viewW = Math.min(imageW, wantedW);
+      }
+
+      return {
+        x: viewX,
+        y: viewY,
+        width: viewW,
+        height: viewH,
+        scaleX: canvas.width / Math.max(1, viewW),
+        scaleY: canvas.height / Math.max(1, viewH)
+      };
+    }
+
+    function drawCropEditor(canvas, box, view = cropEditorView(box, canvas)) {
+      const cropCtx = canvas.getContext("2d");
+      cropCtx.clearRect(0, 0, canvas.width, canvas.height);
+      cropCtx.drawImage(
+        state.image,
+        view.x,
+        view.y,
+        view.width,
+        view.height,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+      const left = (box.x - view.x) * view.scaleX;
+      const top = (box.y - view.y) * view.scaleY;
+      const right = (box.x + box.width - view.x) * view.scaleX;
+      const bottom = (box.y + box.height - view.y) * view.scaleY;
+
+      cropCtx.save();
+      cropCtx.fillStyle = "rgba(35, 24, 19, 0.48)";
+      cropCtx.beginPath();
+      cropCtx.rect(0, 0, canvas.width, canvas.height);
+      cropCtx.rect(left, top, right - left, bottom - top);
+      cropCtx.fill("evenodd");
+
+      cropCtx.strokeStyle = "#fff";
+      cropCtx.lineWidth = 5;
+      cropCtx.strokeRect(left, top, right - left, bottom - top);
+      cropCtx.strokeStyle = "#9b5336";
+      cropCtx.lineWidth = 2.5;
+      cropCtx.strokeRect(left, top, right - left, bottom - top);
+
+      const handles = [
+        [left, top],
+        [(left + right) / 2, top],
+        [right, top],
+        [right, (top + bottom) / 2],
+        [right, bottom],
+        [(left + right) / 2, bottom],
+        [left, bottom],
+        [left, (top + bottom) / 2]
+      ];
+      handles.forEach(([x, y]) => {
+        cropCtx.beginPath();
+        cropCtx.arc(x, y, 7, 0, Math.PI * 2);
+        cropCtx.fillStyle = "#fff";
+        cropCtx.fill();
+        cropCtx.strokeStyle = "#9b5336";
+        cropCtx.lineWidth = 3;
+        cropCtx.stroke();
+      });
+      cropCtx.restore();
+      canvas._cropView = view;
+    }
+
+    function cropEditorHit(canvas, box, event) {
+      const rect = canvas.getBoundingClientRect();
+      const pointX = (event.clientX - rect.left) * canvas.width / rect.width;
+      const pointY = (event.clientY - rect.top) * canvas.height / rect.height;
+      const view = canvas._cropView;
+      const left = (box.x - view.x) * view.scaleX;
+      const top = (box.y - view.y) * view.scaleY;
+      const right = (box.x + box.width - view.x) * view.scaleX;
+      const bottom = (box.y + box.height - view.y) * view.scaleY;
+      const threshold = 18;
+      const nearLeft = Math.abs(pointX - left) <= threshold;
+      const nearRight = Math.abs(pointX - right) <= threshold;
+      const nearTop = Math.abs(pointY - top) <= threshold;
+      const nearBottom = Math.abs(pointY - bottom) <= threshold;
+      const withinX = pointX >= left - threshold && pointX <= right + threshold;
+      const withinY = pointY >= top - threshold && pointY <= bottom + threshold;
+      let mode = "";
+      if (nearTop && nearLeft) mode = "top-left";
+      else if (nearTop && nearRight) mode = "top-right";
+      else if (nearBottom && nearLeft) mode = "bottom-left";
+      else if (nearBottom && nearRight) mode = "bottom-right";
+      else if (nearLeft && withinY) mode = "left";
+      else if (nearRight && withinY) mode = "right";
+      else if (nearTop && withinX) mode = "top";
+      else if (nearBottom && withinX) mode = "bottom";
+      return { mode, pointX, pointY };
+    }
+
+    function attachCropEditor(canvas, box) {
+      let drag = null;
+      canvas.addEventListener("pointerdown", (event) => {
+        const hit = cropEditorHit(canvas, box, event);
+        if (!hit.mode) return;
+        event.preventDefault();
+        canvas.setPointerCapture(event.pointerId);
+        drag = {
+          mode: hit.mode,
+          startX: hit.pointX,
+          startY: hit.pointY,
+          box: { x: box.x, y: box.y, width: box.width, height: box.height },
+          view: canvas._cropView
+        };
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (!drag) return;
+        event.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const pointX = (event.clientX - rect.left) * canvas.width / rect.width;
+        const pointY = (event.clientY - rect.top) * canvas.height / rect.height;
+        const dx = (pointX - drag.startX) / drag.view.scaleX;
+        const dy = (pointY - drag.startY) / drag.view.scaleY;
+        const start = drag.box;
+        const minSize = 20;
+        const startRight = start.x + start.width;
+        const startBottom = start.y + start.height;
+
+        if (drag.mode.includes("left")) {
+          box.x = Math.round(clamp(start.x + dx, 0, startRight - minSize));
+          box.width = Math.round(startRight - box.x);
+        }
+        if (drag.mode.includes("right")) {
+          box.width = Math.round(clamp(start.width + dx, minSize, imageWidth() - start.x));
+        }
+        if (drag.mode.includes("top")) {
+          box.y = Math.round(clamp(start.y + dy, 0, startBottom - minSize));
+          box.height = Math.round(startBottom - box.y);
+        }
+        if (drag.mode.includes("bottom")) {
+          box.height = Math.round(clamp(start.height + dy, minSize, imageHeight() - start.y));
+        }
+
+        clampBox(box);
+        drawCropEditor(canvas, box, drag.view);
+        drawPreview();
+        const inputs = $("frameInspector").querySelectorAll(".inspector-field input");
+        const values = [box.x, box.y, box.width, box.height];
+        inputs.forEach((input, index) => input.value = values[index]);
+      });
+
+      const finishDrag = () => {
+        if (!drag) return;
+        drag = null;
+        render();
+      };
+      canvas.addEventListener("pointerup", finishDrag);
+      canvas.addEventListener("pointercancel", finishDrag);
+    }
+
     function renderInspector() {
       const inspector = $("frameInspector");
       inspector.replaceChildren();
@@ -901,6 +1112,16 @@
       });
       enabledLabel.append(enabled, "Include in export");
       head.append(title, enabledLabel);
+
+      const cropEditor = document.createElement("div");
+      cropEditor.className = "crop-editor";
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = 720;
+      cropCanvas.height = 480;
+      const cropHelp = document.createElement("div");
+      cropHelp.className = "crop-editor-help";
+      cropHelp.textContent = "Drag an edge or corner to refine this crop.";
+      cropEditor.append(cropCanvas, cropHelp);
 
       const grid = document.createElement("div");
       grid.className = "inspector-grid";
@@ -942,7 +1163,9 @@
         render();
       });
       actions.append(previous, next, remove);
-      inspector.append(head, grid, actions);
+      inspector.append(head, cropEditor, grid, actions);
+      drawCropEditor(cropCanvas, box);
+      attachCropEditor(cropCanvas, box);
     }
 
     function clampBox(box) {
