@@ -112,10 +112,32 @@
       position: relative;
     }
 
-    .brand-mark svg {
-      display: block;
-      width: 100%;
-      height: 100%;
+    .brand-mark::before {
+      content: "";
+      position: absolute;
+      width: 28px;
+      height: 24px;
+      left: 8px;
+      top: 10px;
+      border: 2px solid var(--cream);
+      border-radius: 3px;
+      background:
+        linear-gradient(
+          to bottom,
+          var(--cream) 0 4px,
+          transparent 4px 18px,
+          var(--cream) 18px 22px
+        );
+    }
+
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      width: 2px;
+      height: 14px;
+      left: 21px;
+      top: 15px;
+      background: var(--cream);
     }
 
     .brand small {
@@ -228,20 +250,6 @@
       min-height: 0;
     }
 
-    main:has(#emptyState:not([hidden])) {
-      grid-template-rows: auto auto;
-      align-content: start;
-    }
-
-    .workspace:has(#emptyState:not([hidden])) {
-      grid-template-columns: 1fr;
-      min-height: auto;
-    }
-
-    .workspace:has(#emptyState:not([hidden])) .editor {
-      display: none;
-    }
-
     .preview-wrap {
       position: relative;
       overflow: auto;
@@ -274,7 +282,7 @@
 
     .empty {
       width: min(640px, calc(100% - 32px));
-      min-height: 230px;
+      min-height: 300px;
       border: 1.5px dashed var(--line-strong);
       border-radius: 16px;
       background: rgba(251, 247, 241, 0.9);
@@ -304,10 +312,35 @@
     }
 
     .empty-icon {
-      display: block;
-      width: 64px;
-      height: 54px;
+      width: 58px;
+      height: 46px;
       margin: 0 auto 14px;
+      border: 3px solid var(--cocoa);
+      border-radius: 10px;
+      background: var(--cream);
+      position: relative;
+    }
+
+    .empty-icon::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 17px;
+      top: 11px;
+      border: 3px solid var(--accent);
+      border-radius: 50%;
+    }
+
+    .empty-icon::after {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 6px;
+      left: 6px;
+      top: -8px;
+      border-radius: 4px 4px 0 0;
+      background: var(--cocoa);
     }
 
     .empty strong {
@@ -547,16 +580,7 @@
   <div class="app">
     <aside>
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 64 64">
-            <path d="M12 23a6 6 0 0 1 6-6h8l3-5h12l3 5h2a6 6 0 0 1 6 6v23a6 6 0 0 1-6 6H18a6 6 0 0 1-6-6Z" fill="#f4ecdf"/>
-            <path d="M12 25h40v6H12z" fill="#c28a5c"/>
-            <circle cx="33" cy="36" r="11" fill="#4a3429"/>
-            <circle cx="33" cy="36" r="7" fill="#9b5336"/>
-            <circle cx="30" cy="33" r="2" fill="#f4ecdf"/>
-            <circle cx="46" cy="22" r="2" fill="#4a3429"/>
-          </svg>
-        </span>
+        <span class="brand-mark" aria-hidden="true"></span>
         <div>
           <h1>Frame Splitter</h1>
           <small>Film scan crop studio</small>
@@ -651,14 +675,7 @@
         <div class="preview-wrap">
           <label class="empty" id="emptyState" for="fileInput">
             <div class="empty-content">
-              <svg class="empty-icon" viewBox="0 0 72 60" aria-hidden="true">
-                <path d="M7 22a7 7 0 0 1 7-7h12l4-6h15l4 6h9a7 7 0 0 1 7 7v25a7 7 0 0 1-7 7H14a7 7 0 0 1-7-7Z" fill="#f4ecdf" stroke="#4a3429" stroke-width="4"/>
-                <path d="M9 23h54v7H9z" fill="#c28a5c"/>
-                <circle cx="37" cy="36" r="13" fill="#4a3429"/>
-                <circle cx="37" cy="36" r="8" fill="#9b5336"/>
-                <circle cx="33" cy="32" r="2.5" fill="#f4ecdf"/>
-                <circle cx="56" cy="21" r="2.5" fill="#4a3429"/>
-              </svg>
+              <div class="empty-icon" aria-hidden="true"></div>
               <strong>Drop your film scan here</strong>
               or click to choose a JPG, PNG, or TIFF file
             </div>
