@@ -693,8 +693,9 @@
       <div class="control">
         <label for="aspect">Crop mode</label>
         <select id="aspect">
-          <option value="smart-landscape">Smart 3:2 frames</option>
-          <option value="smart-portrait">Smart 2:3 frames</option>
+          <option value="smart-auto">Auto</option>
+          <option value="smart-landscape">Half Frame 2:3</option>
+          <option value="smart-portrait">Full Frame 3:2</option>
         </select>
       </div>
       <div class="row">
@@ -806,6 +807,7 @@
       imageName: "",
       boxes: [],
       selected: -1,
+      detectedPortrait: false,
       scale: 1,
       previewMax: 2200
     };
@@ -1239,9 +1241,8 @@
       return sorted[index];
     }
 
-    function analyzeImage() {
+    function analyzeImage(maxSide = 1200) {
       const img = state.image;
-      const maxSide = 1200;
       const fullWidth = imageWidth();
       const fullHeight = imageHeight();
       const scale = Math.min(1, maxSide / Math.max(fullWidth, fullHeight));
@@ -1360,6 +1361,338 @@
       return Math.abs(laneEstimate - fallback) <= 3 ? laneEstimate : fallback;
     }
 
+    function inferVerticalFramePortrait(analysis, lanes, boundarySensitivity) {
+      // A rotated half-frame advances roughly 2/3 of the strip width per
+      // exposure; a rotated full 35 mm frame advances roughly 3/2.  Use the
+      // repeated separator pitch instead of scene content so very dark, blank,
+      // or overexposed photos do not change the selected format.
+      const normalizedGaps = [];
+      lanes.forEach(([laneStart, laneEnd]) => {
+        const laneWidth = Math.max(1, laneEnd - laneStart);
+        const bands = darkSeparatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity);
+        for (let index = 1; index < bands.length; index++) {
+          const normalized = (bands[index].center - bands[index - 1].center) / laneWidth;
+          if (normalized >= 0.42 && normalized <= 1.90) normalizedGaps.push(normalized);
+        }
+      });
+
+      if (normalizedGaps.length >= 2) {
+        normalizedGaps.sort((a, b) => a - b);
+        // Missed separators create integer-multiple gaps.  Looking at the
+        // lower half preserves the fundamental pitch when a dark frame hides
+        // one boundary.
+        const fundamental = normalizedGaps[
+          Math.floor(Math.max(0, normalizedGaps.length - 1) * 0.35)
+        ];
+        return fundamental > 1.24;
+      }
+
+      // Preserve the established half-frame behavior when the scan has too
+      // few trustworthy separator bands to identify the format automatically.
+      return false;
+    }
+
+    function darkSeparatorProfile(analysis, x1, x2) {
+      const startX = Math.max(0, Math.floor(x1));
+      const endX = Math.min(analysis.width, Math.ceil(x2));
+      const profile = new Float32Array(analysis.height);
+      for (let y = 0; y < analysis.height; y++) {
+        let dark = 0;
+        let sum = 0;
+        let sumSquares = 0;
+        for (let x = startX; x < endX; x++) {
+          const i = (y * analysis.width + x) * 4;
+          const lum = luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]);
+          if (lum < 58) dark += 1;
+          sum += lum;
+          sumSquares += lum * lum;
+        }
+        const width = Math.max(1, endX - startX);
+        const darkRatio = dark / width;
+        const mean = sum / width;
+        const variance = Math.max(0, sumSquares / width - mean * mean);
+        const std = Math.sqrt(variance);
+        let darkScore = darkRatio;
+        if (mean > 72) darkScore *= 0.45;
+        if (std > 38) {
+          darkScore *= 0.40;
+        }
+        profile[y] = darkScore;
+      }
+      return profile;
+    }
+
+    function darkSeparatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity) {
+      const laneWidth = laneEnd - laneStart;
+      const inset = Math.max(2, laneWidth * 0.04);
+      const rawProfile = darkSeparatorProfile(analysis, laneStart + inset, laneEnd - inset);
+      const profile = smoothArray(
+        rawProfile,
+        Math.max(3, Math.round(laneWidth * 0.018))
+      );
+      const threshold = clamp(boundarySensitivity || 82, 70, 95) / 100;
+      const mask = Array.from(profile, (value) => value > threshold);
+      const expanded = activeSegments(mask, Math.max(2, Math.round(laneWidth * 0.018)))
+        .map(([roughStart, roughEnd]) => {
+          const rawThreshold = threshold * 0.78;
+          let start = roughStart;
+          let end = roughEnd;
+          while (start > 0 && rawProfile[start - 1] > rawThreshold) start -= 1;
+          while (end < rawProfile.length && rawProfile[end] > rawThreshold) end += 1;
+          return { start, end, roughStart, roughEnd };
+        })
+        .filter((band) => band.end - band.start <= Math.max(12, laneWidth * 0.42));
+
+      const plausibleWidths = expanded
+        .map((band) => band.end - band.start)
+        .filter((width) => width >= laneWidth * 0.018 && width <= laneWidth * 0.18)
+        .sort((a, b) => a - b);
+      const lowerHalf = plausibleWidths.slice(0, Math.max(1, Math.ceil(plausibleWidths.length / 2)));
+      const typicalWidth = lowerHalf.length
+        ? lowerHalf[Math.floor(lowerHalf.length / 2)]
+        : Math.max(3, laneWidth * 0.075);
+      const maximumNormalWidth = Math.max(typicalWidth * 1.45, laneWidth * 0.11);
+
+      return expanded.flatMap((band) => {
+        const { start, end } = band;
+        if (end - start > maximumNormalWidth) {
+          const startBand = {
+            start,
+            end: Math.min(end, start + typicalWidth),
+            center: start + typicalWidth / 2,
+            derived: true
+          };
+          const endBand = {
+            start: Math.max(start, end - typicalWidth),
+            end,
+            center: end - typicalWidth / 2,
+            derived: true
+          };
+          return [startBand, endBand];
+        }
+        return [{ start, end, center: (start + end) / 2, derived: false }];
+      });
+    }
+
+    function filmOpeningColumnsForLane(analysis, laneStart, laneEnd) {
+      const start = Math.max(0, Math.floor(laneStart));
+      const end = Math.min(analysis.width, Math.ceil(laneEnd));
+      const laneWidth = Math.max(1, end - start);
+      const profile = smoothArray(
+        Array.from(analysis.nonWhiteColumns.slice(start, end)),
+        Math.max(3, Math.round(laneWidth * 0.018))
+      );
+      const active = activeSegments(
+        Array.from(profile, (value) => value > 0.56),
+        Math.max(8, Math.round(laneWidth * 0.36))
+      );
+      const opening = active.length
+        ? active.reduce((best, item) => item[1] - item[0] > best[1] - best[0] ? item : best)
+        : [0, laneWidth];
+      const safety = Math.max(0.5, laneWidth * 0.003);
+      return {
+        left: start + opening[0] + safety,
+        right: start + opening[1] - safety
+      };
+    }
+
+    function halfFramePhotoColumnsForLane(analysis, laneStart, laneEnd) {
+      const outer = filmOpeningColumnsForLane(analysis, laneStart, laneEnd);
+      const start = Math.max(0, Math.floor(laneStart));
+      const end = Math.min(analysis.width, Math.ceil(laneEnd));
+      const laneWidth = Math.max(1, end - start);
+      const rawProfile = new Float32Array(laneWidth);
+
+      for (let localX = 0; localX < laneWidth; localX++) {
+        const x = start + localX;
+        let dark = 0;
+        let sum = 0;
+        let sumSquares = 0;
+        for (let y = 0; y < analysis.height; y++) {
+          const i = (y * analysis.width + x) * 4;
+          const lum = luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]);
+          if (lum < 58) dark += 1;
+          sum += lum;
+          sumSquares += lum * lum;
+        }
+        const samples = Math.max(1, analysis.height);
+        const mean = sum / samples;
+        const variance = Math.max(0, sumSquares / samples - mean * mean);
+        const std = Math.sqrt(variance);
+        let score = dark / samples;
+        if (mean > 72) score *= 0.45;
+        if (std > 38) score *= 0.45;
+        rawProfile[localX] = score;
+      }
+
+      const profile = smoothArray(rawProfile, Math.max(1, Math.round(laneWidth * 0.008)));
+      const threshold = Math.max(0.48, percentile(profile, 82) * 0.76);
+      const segments = activeSegments(
+        Array.from(profile, (value) => value > threshold),
+        Math.max(1, Math.round(laneWidth * 0.004))
+      ).filter(([segmentStart, segmentEnd]) =>
+        segmentEnd - segmentStart <= Math.max(4, laneWidth * 0.16)
+      );
+
+      const outerLeft = outer.left - start;
+      const outerRight = outer.right - start;
+      const edgeReach = laneWidth * 0.055;
+      const leftBorder = segments.find(([segmentStart]) =>
+        segmentStart <= outerLeft + edgeReach
+      );
+      const rightBorder = [...segments].reverse().find(([, segmentEnd]) =>
+        segmentEnd >= outerRight - edgeReach
+      );
+
+      const left = leftBorder
+        ? start + leftBorder[1]
+        : outer.left;
+      const right = rightBorder
+        ? start + rightBorder[0]
+        : outer.right;
+      if (right - left < laneWidth * 0.68) return outer;
+      return { left, right };
+    }
+
+    function fullFrameOuterPhotoEdges(analysis, openingColumns, pitchPreview) {
+      const startX = Math.max(0, Math.floor(openingColumns.left));
+      const endX = Math.min(analysis.width, Math.ceil(openingColumns.right));
+      const profile = new Float32Array(analysis.height);
+      for (let y = 0; y < analysis.height; y++) {
+        let nonWhite = 0;
+        for (let x = startX; x < endX; x++) {
+          const i = (y * analysis.width + x) * 4;
+          if (luminance(analysis.data[i], analysis.data[i + 1], analysis.data[i + 2]) < 242) {
+            nonWhite += 1;
+          }
+        }
+        profile[y] = nonWhite / Math.max(1, endX - startX);
+      }
+
+      const smoothed = smoothArray(profile, Math.max(3, Math.round((endX - startX) * 0.012)));
+      const sustain = Math.max(2, Math.round((endX - startX) * 0.018));
+      const searchLength = Math.min(analysis.height, Math.round(pitchPreview * 0.32));
+      let top = 0;
+      if (smoothed[0] < 0.20) {
+        for (let y = 0; y <= searchLength - sustain; y++) {
+          let active = 0;
+          for (let offset = 0; offset < sustain; offset++) {
+            if (smoothed[y + offset] > 0.34) active += 1;
+          }
+          if (active >= Math.ceil(sustain * 0.75)) {
+            top = y;
+            break;
+          }
+        }
+      }
+
+      let bottom = analysis.height;
+      if (smoothed[analysis.height - 1] < 0.20) {
+        for (let y = analysis.height - 1; y >= analysis.height - searchLength + sustain; y--) {
+          let active = 0;
+          for (let offset = 0; offset < sustain; offset++) {
+            if (smoothed[y - offset] > 0.34) active += 1;
+          }
+          if (active >= Math.ceil(sustain * 0.75)) {
+            bottom = y + 1;
+            break;
+          }
+        }
+      }
+      return { top, bottom };
+    }
+
+    function orderedFullFrameBands(localBands, fallbackBands, frames, pitchPreview) {
+      const isInternal = (band) =>
+        band.center > pitchPreview * 0.25 &&
+        band.center < pitchPreview * (frames - 0.25);
+      const localInternal = localBands.filter(isInternal).sort((a, b) => a.center - b.center);
+      if (
+        localInternal.length === frames - 1 &&
+        localInternal.every((band) => !band.derived)
+      ) return localInternal;
+
+      const offsets = [];
+      localInternal.forEach((local) => {
+        let nearest = null;
+        let nearestDistance = Infinity;
+        fallbackBands.forEach((fallback) => {
+          const distance = Math.abs(local.center - fallback.center);
+          if (distance < nearestDistance && distance <= pitchPreview * 0.28) {
+            nearest = fallback;
+            nearestDistance = distance;
+          }
+        });
+        if (nearest) offsets.push(local.center - nearest.center);
+      });
+      offsets.sort((a, b) => a - b);
+      const fallbackOffset = offsets.length ? offsets[Math.floor(offsets.length / 2)] : 0;
+      const alignedFallbackBands = fallbackBands.map((band) => ({
+        start: band.start + fallbackOffset,
+        end: band.end + fallbackOffset,
+        center: band.center + fallbackOffset
+      }));
+      const tagged = [
+        ...localInternal.map((band) => ({ ...band, local: !band.derived })),
+        ...alignedFallbackBands.map((band) => ({ ...band, local: false }))
+      ]
+        .filter(isInternal)
+        .sort((a, b) => a.center - b.center);
+      const clusters = [];
+      const clusterDistance = Math.max(2, pitchPreview * 0.07);
+      tagged.forEach((band) => {
+        const last = clusters[clusters.length - 1];
+        if (!last || band.center - last[last.length - 1].center > clusterDistance) {
+          clusters.push([band]);
+        } else {
+          last.push(band);
+        }
+      });
+      const candidates = clusters.map((cluster) => {
+        const local = cluster.find((band) => band.local);
+        if (local) return local;
+        const fallback = cluster.find((band) => !band.derived);
+        if (fallback) return fallback;
+        const derived = cluster.find((band) => band.derived);
+        if (derived) return { ...derived, local: false };
+        const start = cluster.reduce((sum, band) => sum + band.start, 0) / cluster.length;
+        const end = cluster.reduce((sum, band) => sum + band.end, 0) / cluster.length;
+        return { start, end, center: (start + end) / 2, local: false };
+      });
+
+      if (candidates.length === frames - 1) return candidates;
+
+      const selected = [];
+      let previousIndex = -1;
+      for (let boundaryIndex = 1; boundaryIndex < frames; boundaryIndex++) {
+        const target = boundaryIndex * pitchPreview;
+        let bestIndex = -1;
+        let bestDistance = Infinity;
+        const eligibleIndexes = [];
+        for (let index = previousIndex + 1; index < candidates.length; index++) {
+          const distance = Math.abs(candidates[index].center - target);
+          if (distance <= pitchPreview * 0.22) eligibleIndexes.push(index);
+        }
+        const localIndexes = eligibleIndexes.filter((index) => candidates[index].local);
+        const pool = localIndexes.length ? localIndexes : eligibleIndexes;
+        for (const index of pool) {
+          const distance = Math.abs(candidates[index].center - target);
+          if (distance < bestDistance) {
+            bestIndex = index;
+            bestDistance = distance;
+          }
+        }
+        if (bestIndex >= 0) {
+          selected.push(candidates[bestIndex]);
+          previousIndex = bestIndex;
+        } else {
+          selected.push(null);
+        }
+      }
+      return selected;
+    }
+
+    // Kept byte-for-byte in behavior for the established half-frame path.
     function rowBlankProfile(analysis, x1, x2) {
       const startX = Math.max(0, Math.floor(x1));
       const endX = Math.min(analysis.width, Math.ceil(x2));
@@ -1396,7 +1729,7 @@
       return profile;
     }
 
-    function separatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity) {
+    function legacySeparatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity) {
       const laneWidth = laneEnd - laneStart;
       const inset = Math.max(2, laneWidth * 0.04);
       const profile = smoothArray(
@@ -1505,15 +1838,15 @@
       return fallback;
     }
 
-    function smartVerticalFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent, boundarySensitivity, portrait = false) {
+    function smartHalfFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent, boundarySensitivity) {
       const laneWidth = laneEnd - laneStart;
       const leftInset = Math.max(3, laneWidth * (laneCount > 1 ? 0.055 : 0.047));
       const rightInset = Math.max(2, laneWidth * (laneCount > 1 ? 0.032 : 0.024));
       const cropWidthPreview = Math.max(8, laneWidth - leftInset - rightInset);
-      const bands = separatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity);
-      const frames = independentLaneFrameCount(analysis.height, laneWidth, laneCount, forcedFrames, portrait, bands);
+      const bands = legacySeparatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity);
+      const frames = independentLaneFrameCount(analysis.height, laneWidth, laneCount, forcedFrames, false, bands);
       const pitchPreview = analysis.height / frames;
-      const aspectHeight = portrait ? cropWidthPreview * 1.5 : cropWidthPreview / 1.5;
+      const aspectHeight = cropWidthPreview / 1.5;
       const gapFactor = clamp(rowGapPercent || 8, 2, 20) / 100;
       const topInset = Math.max(0.5, pitchPreview * gapFactor * 0.035);
       const bottomInset = Math.max(1, pitchPreview * gapFactor * 0.14);
@@ -1584,6 +1917,108 @@
           x: refinedLeft / analysis.scale,
           y: top / analysis.scale,
           width: Math.max(8, rightEdge - refinedLeft) / analysis.scale,
+          height: (bottom - top) / analysis.scale
+        });
+      }
+      return boxes;
+    }
+
+    function physicalHalfFrameBoxes(analysis, laneStart, laneEnd, laneCount, coarseBoxes, rowGapPercent, boundarySensitivity, fallbackBands = []) {
+      const frames = coarseBoxes.length;
+      if (!frames) return [];
+      const laneWidth = laneEnd - laneStart;
+      const openingColumns = halfFramePhotoColumnsForLane(analysis, laneStart, laneEnd);
+      const cropWidthPreview = Math.max(8, openingColumns.right - openingColumns.left);
+      const bands = darkSeparatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity);
+      const pitchPreview = analysis.height / Math.max(1, frames);
+      const internalBands = orderedFullFrameBands(bands, fallbackBands, frames, pitchPreview);
+      const reliableBands = internalBands.map((band, index) => {
+        const target = (index + 1) * pitchPreview;
+        return band &&
+          !band.derived &&
+          Math.abs(band.center - target) <= pitchPreview * 0.18
+          ? band
+          : null;
+      });
+      const reliableCount = reliableBands.filter(Boolean).length;
+      const hasReliableLaneGeometry = reliableCount >= Math.max(2, Math.ceil((frames - 1) * 0.60));
+      if (!hasReliableLaneGeometry) return coarseBoxes;
+
+      const boxes = [];
+      for (let frame = 0; frame < frames; frame++) {
+        const coarse = coarseBoxes[frame];
+        const coarseTop = coarse.y * analysis.scale;
+        const coarseBottom = (coarse.y + coarse.height) * analysis.scale;
+        const topBand = frame > 0 ? reliableBands[frame - 1] : null;
+        const bottomBand = frame < frames - 1 ? reliableBands[frame] : null;
+        const top = topBand ? topBand.end : coarseTop;
+        const bottom = bottomBand ? bottomBand.start : coarseBottom;
+        boxes.push({
+          x: openingColumns.left / analysis.scale,
+          y: top / analysis.scale,
+          width: cropWidthPreview / analysis.scale,
+          height: (bottom - top) / analysis.scale
+        });
+      }
+      return boxes;
+    }
+
+    function smartFullFrameBoxes(analysis, laneStart, laneEnd, laneCount, forcedFrames, rowGapPercent, boundarySensitivity, fallbackBands = []) {
+      const laneWidth = laneEnd - laneStart;
+      const openingColumns = filmOpeningColumnsForLane(analysis, laneStart, laneEnd);
+      const cropWidthPreview = Math.max(8, openingColumns.right - openingColumns.left);
+      const bands = darkSeparatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity);
+      const frames = independentLaneFrameCount(analysis.height, laneWidth, laneCount, forcedFrames, true, bands);
+      const pitchPreview = analysis.height / frames;
+      const gapFactor = clamp(rowGapPercent || 8, 2, 20) / 100;
+      const edgeInset = Math.max(0.5, pitchPreview * gapFactor * 0.018);
+      const outerEdges = fullFrameOuterPhotoEdges(analysis, openingColumns, pitchPreview);
+      const internalBands = orderedFullFrameBands(bands, fallbackBands, frames, pitchPreview);
+      const boundaries = [];
+
+      for (let boundaryIndex = 0; boundaryIndex <= frames; boundaryIndex++) {
+        if (boundaryIndex === 0) {
+          boundaries.push({ start: outerEdges.top, end: outerEdges.top });
+          continue;
+        }
+        if (boundaryIndex === frames) {
+          boundaries.push({ start: outerEdges.bottom, end: outerEdges.bottom });
+          continue;
+        }
+
+        const target = boundaryIndex * pitchPreview;
+        const best = internalBands[boundaryIndex - 1];
+
+        if (best) {
+          boundaries.push(best);
+        } else {
+          const syntheticHalfGap = Math.max(1, pitchPreview * gapFactor * 0.22);
+          boundaries.push({
+            start: target - syntheticHalfGap,
+            end: target + syntheticHalfGap
+          });
+        }
+      }
+
+      const boxes = [];
+      for (let frame = 0; frame < frames; frame++) {
+        const slotStart = frame * pitchPreview;
+        const slotEnd = (frame + 1) * pitchPreview;
+        let top = boundaries[frame].end + edgeInset;
+        let bottom = boundaries[frame + 1].start - edgeInset;
+
+        // Only synthesize an interval when separator detection is genuinely
+        // invalid. Never move a valid physical edge merely to force 3:2.
+        if (bottom - top < pitchPreview * 0.40) {
+          const syntheticGap = Math.max(1, pitchPreview * gapFactor * 0.11);
+          top = slotStart + syntheticGap;
+          bottom = slotEnd - syntheticGap;
+        }
+
+        boxes.push({
+          x: openingColumns.left / analysis.scale,
+          y: top / analysis.scale,
+          width: cropWidthPreview / analysis.scale,
           height: (bottom - top) / analysis.scale
         });
       }
@@ -1720,22 +2155,23 @@
 
     function detectBoxes() {
       const img = state.image;
-      const analysis = analyzeImage();
+      const cropMode = $("aspect").value;
+      let analysis = analyzeImage(cropMode === "smart-portrait" ? 2600 : 1200);
       const orientationSetting = $("orientation").value;
       const orientation = orientationSetting === "auto"
         ? (imageWidth() >= imageHeight() ? "horizontal" : "vertical")
         : orientationSetting;
       const forcedLanes = $("lanes").value === "auto" ? 0 : Number($("lanes").value) || 1;
       const forcedFrames = Number($("frames").value) || 0;
-      const cropMode = $("aspect").value;
-      const portrait = cropMode === "smart-portrait";
-      const landscape = !portrait;
       const padding = (Number($("padding").value) || 0) / 100;
       const rowGapPercent = Number($("rowGap").value) || 8;
       const boundarySensitivity = Number($("boundarySensitivity").value) || 82;
       const boxes = [];
+      let portrait = cropMode === "smart-portrait";
 
       if (orientation === "horizontal") {
+        if (cropMode === "smart-auto") portrait = false;
+        const landscape = !portrait;
         const lanes = detectHorizontalLanes(analysis, forcedLanes);
         lanes.forEach(([laneStart, laneEnd]) => {
           const laneHeight = laneEnd - laneStart;
@@ -1750,10 +2186,49 @@
           }
         });
       } else {
-        const lanes = detectVerticalLanes(analysis, forcedLanes);
-        lanes.forEach(([laneStart, laneEnd]) => {
-          if (cropMode === "smart-landscape" || cropMode === "smart-portrait") {
-            smartVerticalFrameBoxes(analysis, laneStart, laneEnd, lanes.length, forcedFrames, rowGapPercent, boundarySensitivity, portrait).forEach((box) => {
+        let lanes = detectVerticalLanes(analysis, forcedLanes);
+        if (cropMode === "smart-auto") {
+          portrait = inferVerticalFramePortrait(analysis, lanes, boundarySensitivity);
+          if (portrait) {
+            analysis = analyzeImage(2600);
+            lanes = detectVerticalLanes(analysis, forcedLanes);
+          }
+        }
+        let halfFrameCoarseBoxes = [];
+        if (!portrait) {
+          halfFrameCoarseBoxes = lanes.map(([laneStart, laneEnd]) =>
+            smartHalfFrameBoxes(
+              analysis,
+              laneStart,
+              laneEnd,
+              lanes.length,
+              forcedFrames,
+              rowGapPercent,
+              boundarySensitivity
+            )
+          );
+          analysis = analyzeImage(2600);
+          lanes = detectVerticalLanes(analysis, forcedLanes);
+        }
+        const laneBands = lanes.map(([laneStart, laneEnd]) =>
+          darkSeparatorBandsForLane(analysis, laneStart, laneEnd, boundarySensitivity)
+        );
+        lanes.forEach(([laneStart, laneEnd], laneIndex) => {
+          if (cropMode === "smart-auto" || cropMode === "smart-landscape" || cropMode === "smart-portrait") {
+            const fallbackBands = laneBands.flatMap((bands, index) => index === laneIndex ? [] : bands);
+            const detected = portrait
+              ? smartFullFrameBoxes(analysis, laneStart, laneEnd, lanes.length, forcedFrames, rowGapPercent, boundarySensitivity, fallbackBands)
+              : physicalHalfFrameBoxes(
+                  analysis,
+                  laneStart,
+                  laneEnd,
+                  lanes.length,
+                  halfFrameCoarseBoxes[laneIndex] || [],
+                  rowGapPercent,
+                  boundarySensitivity,
+                  fallbackBands
+                );
+            detected.forEach((box) => {
               boxes.push(makeBox(box.x, box.y, box.width, box.height, boxes.length + 1, padding, img));
             });
             return;
@@ -1767,7 +2242,8 @@
 
       state.boxes = boxes;
       state.selected = boxes.length ? 0 : -1;
-      const modeLabel = portrait ? "smart 2:3 frames" : "smart 3:2 frames";
+      state.detectedPortrait = portrait;
+      const modeLabel = portrait ? "full-frame 35mm 2:3 frames" : "half-frame 3:2 frames";
       setMessage(`Detected ${boxes.length} crop box${boxes.length === 1 ? "" : "es"} using ${modeLabel}.`);
       render();
     }
@@ -1903,7 +2379,9 @@
     });
     $("addBtn").addEventListener("click", () => {
       if (!state.image) return;
-      const landscape = $("aspect").value === "smart-landscape";
+      const cropMode = $("aspect").value;
+      const landscape = cropMode === "smart-landscape" ||
+        (cropMode === "smart-auto" && !state.detectedPortrait);
       const width = Math.round(imageWidth() * 0.35);
       const height = Math.round(landscape ? width / 1.5 : width * 1.5);
       const box = {

@@ -5,4 +5,5 @@ __pycache__/
 work/pycache/
 work/
 outputs/
+dist/
 PROJECT.md
