@@ -438,7 +438,6 @@
       display: block;
       width: 100%;
       height: auto;
-      aspect-ratio: 3 / 2;
       border-radius: 9px;
       background: var(--cocoa);
       box-shadow: 0 8px 20px rgba(68, 43, 29, 0.16);
@@ -1119,7 +1118,9 @@
       cropEditor.className = "crop-editor";
       const cropCanvas = document.createElement("canvas");
       cropCanvas.width = 720;
-      cropCanvas.height = 480;
+      const cropAspect = clamp(box.width / Math.max(1, box.height), 0.5, 2);
+      cropCanvas.height = Math.round(cropCanvas.width / cropAspect);
+      cropCanvas.style.aspectRatio = `${box.width} / ${box.height}`;
       const cropHelp = document.createElement("div");
       cropHelp.className = "crop-editor-help";
       cropHelp.textContent = "Drag an edge or corner to refine this crop.";
